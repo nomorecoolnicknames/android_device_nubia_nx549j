@@ -31,6 +31,7 @@ BOARD_KERNEL_CMDLINE := console=null androidboot.console=ttyHSL0 androidboot.har
 # Filesystem layout (nx549j is NOT A/B and uses a real recovery partition)
 BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
 BOARD_USES_RECOVERY_AS_BOOT   := false
+BOARD_SKIP_RECOVERY_FROM_BOOT := true
 TARGET_NO_RECOVERY            := false
 
 # HIDL
