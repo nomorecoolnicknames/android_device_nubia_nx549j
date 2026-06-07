@@ -53,8 +53,10 @@
         <param key="spkr_2_tz_name" value=""/>
     </config_params>
     <acdb_ids>
-        <device name="SND_DEVICE_OUT_SPEAKER" acdb_id="1058"/>
-        <device name="SND_DEVICE_OUT_SPEAKER_PROTECTED" acdb_id="124"/>
+        <device name="SND_DEVICE_OUT_SPEAKER_PROTECTED" acdb_id="136"/>
+        <device name="SND_DEVICE_OUT_VOICE_SPEAKER_PROTECTED" acdb_id="136"/>
+        <device name="SND_DEVICE_OUT_SPEAKER_PROTECTED_VBAT" acdb_id="136"/>
+        <device name="SND_DEVICE_OUT_VOICE_SPEAKER_PROTECTED_VBAT" acdb_id="136"/>
         <device name="SND_DEVICE_OUT_VOICE_HANDSET" acdb_id="18"/>
         <device name="SND_DEVICE_OUT_VOICE_SPEAKER" acdb_id="34"/>
         <device name="SND_DEVICE_OUT_VOICE_HEADPHONES" acdb_id="52"/>
@@ -79,7 +81,7 @@
         <device name="SND_DEVICE_IN_VOICE_RX" acdb_id="357"/>
         <device name="SND_DEVICE_IN_VOICE_REC_MIC" acdb_id="4"/>
         <device name="SND_DEVICE_IN_CAPTURE_FM" acdb_id="0"/>
-        <device name="SND_DEVICE_IN_CAPTURE_VI_FEEDBACK" acdb_id="102"/>
+        <device name="SND_DEVICE_IN_CAPTURE_VI_FEEDBACK" acdb_id="137"/>
         <device name="SND_DEVICE_IN_MAIN_MIC" acdb_id="4"/>
         <device name="SND_DEVICE_IN_TOP_MIC" acdb_id="11"/>
         <device name="SND_DEVICE_IN_FRONT_MIC" acdb_id="11"/>
@@ -572,4 +574,3 @@
         </input_snd_device>
     </snd_devices>
 </audio_platform_info>
-

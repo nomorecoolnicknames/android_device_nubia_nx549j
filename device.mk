@@ -5,7 +5,11 @@
 #
 
 # Inherit from msm8953-common
-$(call inherit-product, device/xiaomi/msm8953-common/msm8953.mk)
+$(call inherit-product, device/nubia/msm8953-common/msm8953.mk)
+
+# CNEService is an Android P-era blob and crashes on Android 11 IMS APIs.
+# Keep native CNE/DPM libraries installed while disabling the Java app.
+PRODUCT_PACKAGES := $(filter-out CNEService,$(PRODUCT_PACKAGES))
 
 $(call inherit-product, $(SRC_TARGET_DIR)/product/product_launched_with_n_mr1.mk)
 
@@ -17,7 +21,14 @@ DEVICE_PACKAGE_OVERLAYS += $(LOCAL_PATH)/overlay-lineage
 TARGET_SCREEN_HEIGHT := 1920
 TARGET_SCREEN_WIDTH := 1080
 
-# Non-A/B device: skip AB_OTA + bootctrl packages (nx549j ships single-slot)
+# Boot HAL
+# Android 11 vold checkpoint setup calls IBootControl even on this single-slot
+# device. The msm8953 bootctrl HAL reports one slot and keeps vold from waiting
+# forever for a missing android.hardware.boot@1.0/default service.
+PRODUCT_PACKAGES += \
+    android.hardware.boot@1.0-impl \
+    android.hardware.boot@1.0-service \
+    bootctrl.msm8953
 
 # Audio configuration
 PRODUCT_COPY_FILES += \
@@ -29,14 +40,9 @@ PRODUCT_PACKAGES += \
     camera.msm8953 \
     libmm-qcamera
 
-# ConsumerIr
-PRODUCT_PACKAGES += \
-    android.hardware.ir@1.0-impl \
-    android.hardware.ir@1.0-service
-
 # Fingerprint
 PRODUCT_PACKAGES += \
-    android.hardware.biometrics.fingerprint@2.1-service.xiaomi_msm8953
+    android.hardware.biometrics.fingerprint@2.1-service.nubia
 
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
@@ -63,15 +69,14 @@ PRODUCT_PACKAGES += \
 
 # Sensors
 PRODUCT_COPY_FILES += \
-    $(LOCAL_PATH)/configs/sensors/sensor_def_qcomdev.conf:$(TARGET_COPY_OUT_VENDOR)/etc/sensors/sensor_def_qcomdev.conf
+    $(LOCAL_PATH)/configs/sensors/sensor_def_qcomdev.conf:$(TARGET_COPY_OUT_VENDOR)/etc/sensors/sensor_def_qcomdev.conf \
+    $(LOCAL_PATH)/configs/sensors/sensor_def_qcomdev.conf:system/etc/sensors/sensor_def_qcomdev.conf \
+    device/nubia/msm8953-common/sensors/hals.conf:$(TARGET_COPY_OUT_VENDOR)/etc/sensors/hals.conf \
+    device/nubia/msm8953-common/sensors/hals.conf:system/etc/sensors/hals.conf
 
 # Soong namespaces
 PRODUCT_SOONG_NAMESPACES += \
     $(LOCAL_PATH)
-
-# Touch HAL
-PRODUCT_PACKAGES += \
-    vendor.lineage.touch@1.0-service.xiaomi_8953
 
 # Update engine
 PRODUCT_PACKAGES += \
@@ -82,9 +87,7 @@ PRODUCT_PACKAGES += \
 PRODUCT_PACKAGES_DEBUG += \
     update_engine_client
 
-# Verity
-PRODUCT_SYSTEM_VERITY_PARTITION := /dev/block/platform/soc/7824900.sdhci/by-name/system
-$(call inherit-product, build/target/product/verity.mk)
+# Verity disabled (vendor.img oversize w/ FEC on 256MB oem partition)
 
 # Inherit the proprietary files
 $(call inherit-product, vendor/nubia/nx549j/nx549j-vendor.mk)

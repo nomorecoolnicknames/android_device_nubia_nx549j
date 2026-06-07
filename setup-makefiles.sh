@@ -11,7 +11,7 @@ set -e
 # Required!
 export DEVICE=nx549j
 export DEVICE_COMMON=msm8953-common
-export VENDOR=xiaomi
+export VENDOR=nubia
 
 "./../../${VENDOR}/${DEVICE_COMMON}/setup-makefiles.sh" "$@"
 

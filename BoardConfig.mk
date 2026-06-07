@@ -7,7 +7,7 @@
 TARGET_KERNEL_VERSION := 4.9
 
 # Inherit from common msm8953-common
-include device/xiaomi/msm8953-common/BoardConfigCommon.mk
+include device/nubia/msm8953-common/BoardConfigCommon.mk
 
 DEVICE_PATH := device/nubia/nx549j
 
@@ -26,7 +26,8 @@ BOARD_KERNEL_OFFSET      := 0x00008000
 BOARD_MKBOOTIMG_ARGS := --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET) --kernel_offset $(BOARD_KERNEL_OFFSET)
 
 # Cmdline (lifted from working crDroid nx549j boot.img)
-BOARD_KERNEL_CMDLINE := console=null androidboot.console=ttyHSL0 androidboot.hardware=qcom msm_rtb.filter=0x237 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 androidboot.bootdevice=7824900.sdhci earlycon=msm_hsl_uart,0x78af000 firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 buildvariant=userdebug
+BOARD_KERNEL_CMDLINE := androidboot.hardware=qcom msm_rtb.filter=0x237 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 androidboot.bootdevice=7824900.sdhci earlycon=msm_serial_dm,0x78af000,115200n8 loop.max_part=16 androidboot.usbconfigfs=true androidboot.selinux=permissive
+BOARD_KERNEL_CMDLINE += frgmark.raw_wdt=1 frgmark.recovery_timeout_sec=120 frgmark.bcb_misc_devt=179:28 initcall_debug
 
 # Filesystem layout (nx549j is NOT A/B and uses a real recovery partition)
 BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
@@ -40,15 +41,17 @@ DEVICE_MANIFEST_FILE += $(DEVICE_PATH)/manifest.xml
 # Kernel
 TARGET_KERNEL_CONFIG := lineageos_nx549j_defconfig
 KERNEL_MAKE_FLAGS := CROSS_COMPILE_ARM32=prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-
+TARGET_KERNEL_ADDITIONAL_FLAGS += CPATH="/usr/include/node:/usr/include/node/openssl/archs/linux-x86_64/no-asm/include:/usr/include:/usr/include/x86_64-linux-gnu"
+TARGET_KERNEL_ADDITIONAL_FLAGS += HOSTCFLAGS="-I/usr/include/node -I/usr/include/node/openssl/archs/linux-x86_64/no-asm/include -fuse-ld=lld"
+TARGET_KERNEL_ADDITIONAL_FLAGS += HOSTLOADLIBES_sign-file=/usr/lib/x86_64-linux-gnu/libcrypto.so.3 HOSTLOADLIBES_extract-cert=/usr/lib/x86_64-linux-gnu/libcrypto.so.3
 
 # Partitions (placeholders; refine from stock fstab/scatter in next phase)
 BOARD_BOOTIMAGE_PARTITION_SIZE     := 67108864
 BOARD_RECOVERYIMAGE_PARTITION_SIZE := 67108864
-BOARD_SYSTEMIMAGE_PARTITION_SIZE   := 3221225472
+BOARD_SYSTEMIMAGE_PARTITION_SIZE   := 4294967296
 BOARD_USERDATAIMAGE_PARTITION_SIZE := 24159191040
-BOARD_VENDORIMAGE_PARTITION_SIZE   := 268435456
 BOARD_FLASH_BLOCK_SIZE             := 131072
-BOARD_USES_VENDORIMAGE             := true
+BOARD_VENDORIMAGE_PARTITION_SIZE   := 300384256
 BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4
 TARGET_COPY_OUT_VENDOR             := vendor
 
@@ -68,3 +71,7 @@ BOARD_CACHEIMAGE_PARTITION_SIZE := 268435456
 BOARD_CACHEIMAGE_FILE_SYSTEM_TYPE := ext4
 
 TARGET_OTA_ASSERT_DEVICE := nx549j,NX549J
+
+# HighwayStar vendor blobs are Android 9 ABI — skip strict ELF check for Android 11
+BUILD_BROKEN_PREBUILT_ELF_FILES := true
+BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true

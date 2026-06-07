@@ -1,11 +1,11 @@
 [
   {
-    "repository": "android_device_xiaomi_msm8953-common",
-    "target_path": "device/xiaomi/msm8953-common"
+    "repository": "android_device_nubia_msm8953-common",
+    "target_path": "device/nubia/msm8953-common"
   },
   {
-    "repository": "android_kernel_xiaomi_msm8953",
-    "target_path": "kernel/xiaomi/msm8953"
+    "repository": "android_kernel_nubia_msm8953",
+    "target_path": "kernel/nubia/msm8953"
   },
   {
     "repository": "android_vendor_nubia_nx549j",
