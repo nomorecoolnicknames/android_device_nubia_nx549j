@@ -27,7 +27,9 @@ BOARD_MKBOOTIMG_ARGS := --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $
 
 # Cmdline (lifted from working crDroid nx549j boot.img)
 BOARD_KERNEL_CMDLINE := androidboot.hardware=qcom msm_rtb.filter=0x237 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 androidboot.bootdevice=7824900.sdhci earlycon=msm_serial_dm,0x78af000,115200n8 loop.max_part=16 androidboot.usbconfigfs=true androidboot.selinux=permissive
-BOARD_KERNEL_CMDLINE += frgmark.raw_wdt=1 frgmark.recovery_timeout_sec=120 frgmark.bcb_misc_devt=179:28 initcall_debug
+# Keep raw WDT opt-in only: attempt165 bootlooped with frgmark.raw_wdt=1 while
+# the same system/vendor booted with the pre-attempt164 boot image.
+BOARD_KERNEL_CMDLINE += frgmark.recovery_timeout_sec=120 frgmark.bcb_misc_devt=179:28 initcall_debug
 
 # Filesystem layout (nx549j is NOT A/B and uses a real recovery partition)
 BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
