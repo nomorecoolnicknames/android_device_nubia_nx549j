@@ -28,7 +28,7 @@ vendor/lib/libmmcamera2_mct_shimlayer.so
 vendor/lib/libmmcamera2_pp_buf_mgr.so
 vendor/lib/libmmcamera2_pproc_modules.so
 vendor/lib/libmmcamera2_q3a_core.so
-vendor/lib/libmmcamera2_sensor_modules.so|5e615b8ae427318cc62f7752819c1a86eb838b09
+vendor/lib/libmmcamera2_sensor_modules.so|bc5851d010db2490f3011e68aeae1912ec297dca
 vendor/lib/libmmcamera2_stats_algorithm.so
 vendor/lib/libmmcamera2_stats_modules.so
 vendor/lib/libmmcamera_csidtg.so
