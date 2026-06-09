@@ -7091,18 +7091,18 @@ int QCamera3HardwareInterface::initCapabilities(uint32_t cameraId)
         goto heap_creation_failed;
     }
     /* Allocate memory for capability buffer */
-    rc = capabilityHeap->allocate(sizeof(cam_capability_t));
+    rc = capabilityHeap->allocate(QCAMERA_CAPABILITY_BUFFER_SIZE);
     if(rc != OK) {
         LOGE("No memory for cappability");
         goto allocate_failed;
     }
 
     /* Map memory for capability buffer */
-    memset(DATA_PTR(capabilityHeap,0), 0, sizeof(cam_capability_t));
+    memset(DATA_PTR(capabilityHeap,0), 0, QCAMERA_CAPABILITY_BUFFER_SIZE);
     rc = cameraHandle->ops->map_buf(cameraHandle->camera_handle,
                                 CAM_MAPPING_BUF_TYPE_CAPABILITY,
                                 capabilityHeap->getFd(0),
-                                sizeof(cam_capability_t),
+                                QCAMERA_CAPABILITY_BUFFER_SIZE,
                                 capabilityHeap->getPtr(0));
     if(rc < 0) {
         LOGE("failed to map capability buffer");
@@ -7184,7 +7184,7 @@ int QCamera3HardwareInterface::initParameters()
 
     //Allocate Set Param Buffer
     mParamHeap = new QCamera3HeapMemory(1);
-    rc = mParamHeap->allocate(sizeof(metadata_buffer_t));
+    rc = mParamHeap->allocate(QCAMERA_PARM_BUFFER_SIZE);
     if(rc != OK) {
         rc = NO_MEMORY;
         LOGE("Failed to allocate SETPARM Heap memory");
@@ -7192,12 +7192,13 @@ int QCamera3HardwareInterface::initParameters()
         mParamHeap = NULL;
         return rc;
     }
+    memset(DATA_PTR(mParamHeap, 0), 0, QCAMERA_PARM_BUFFER_SIZE);
 
     //Map memory for parameters buffer
     rc = mCameraHandle->ops->map_buf(mCameraHandle->camera_handle,
             CAM_MAPPING_BUF_TYPE_PARM_BUF,
             mParamHeap->getFd(0),
-            sizeof(metadata_buffer_t),
+            QCAMERA_PARM_BUFFER_SIZE,
             (metadata_buffer_t *) DATA_PTR(mParamHeap,0));
     if(rc < 0) {
         LOGE("failed to map SETPARM buffer");

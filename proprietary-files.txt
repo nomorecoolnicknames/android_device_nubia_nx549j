@@ -28,7 +28,7 @@ vendor/lib/libmmcamera2_mct_shimlayer.so
 vendor/lib/libmmcamera2_pp_buf_mgr.so
 vendor/lib/libmmcamera2_pproc_modules.so
 vendor/lib/libmmcamera2_q3a_core.so
-vendor/lib/libmmcamera2_sensor_modules.so|253e2492eb4327c3cc11a68382bb0c0e29e7bbc9
+vendor/lib/libmmcamera2_sensor_modules.so|5e615b8ae427318cc62f7752819c1a86eb838b09
 vendor/lib/libmmcamera2_stats_algorithm.so
 vendor/lib/libmmcamera2_stats_modules.so
 vendor/lib/libmmcamera_csidtg.so
@@ -371,4 +371,3 @@ vendor/etc/init/qcrild.rc|f9c32f5e7a8e7f4a0df1dcce174de169b8d7c060
 vendor/lib64/libqcrilFramework.so|3d8f25d13533f6fa45a36b23feb250291b663370
 vendor/lib64/libril-qc-hal-qmi.so|bf1a176d3890eaba94a115a311f98efe1010aeed
 vendor/lib64/qcrild_librilutils.so|c23470619690a34f7442fb6b26345de5dc4de880
-

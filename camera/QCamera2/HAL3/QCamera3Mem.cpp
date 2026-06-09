@@ -340,6 +340,9 @@ int QCamera3HeapMemory::allocOneBuffer(QCamera3MemInfo &memInfo,
     memInfo.fd = ion_info_fd.fd;
     memInfo.handle = ion_info_fd.handle;
     memInfo.size = allocData.len;
+    ALOGE("NX549J camera mapdiag: HAL3 ion alloc request=%zu actual=%zu fd=%d handle=%lx heap=0x%x",
+            size, (size_t)allocData.len, memInfo.fd,
+            (unsigned long)memInfo.handle, heap_id);
     return OK;
 
 ION_MAP_FAILED:

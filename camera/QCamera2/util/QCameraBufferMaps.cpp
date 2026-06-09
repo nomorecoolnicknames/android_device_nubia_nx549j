@@ -31,6 +31,7 @@
 
 // System dependencies
 #include <utils/Errors.h>
+#include <utils/Log.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -181,6 +182,9 @@ uint32_t QCameraBufferMaps::enqueue(cam_mapping_buf_type pType,
     mBufMapList.buf_maps[pos].fd = pFd;
     mBufMapList.buf_maps[pos].size = pSize;
     mBufMapList.buf_maps[pos].buffer = buffer;
+
+    ALOGE("NX549J camera mapdiag: enqueue pos=%u type=%d stream=%u frame=%u plane=%d cookie=%u fd=%d size=%zu buffer=%p",
+            pos, pType, pStreamId, pFrameIndex, pPlaneIndex, pCookie, pFd, pSize, buffer);
 
     return NO_ERROR;
 }

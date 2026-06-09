@@ -46,6 +46,16 @@
         ((size + (typeof(size))(padding - 1)) & \
         (typeof(size))(~(padding - 1)))
 
+#define QCAMERA_MCT_PARM_BUFFER_MIN_SIZE 0x7000
+#define QCAMERA_PARM_BUFFER_SIZE \
+        PAD_TO_SIZE(((sizeof(parm_buffer_t) > QCAMERA_MCT_PARM_BUFFER_MIN_SIZE) ? \
+        sizeof(parm_buffer_t) : QCAMERA_MCT_PARM_BUFFER_MIN_SIZE), CAM_PAD_TO_4K)
+
+#define QCAMERA_MCT_CAPABILITY_BUFFER_MIN_SIZE 0x7000
+#define QCAMERA_CAPABILITY_BUFFER_SIZE \
+        PAD_TO_SIZE(((sizeof(cam_capability_t) > QCAMERA_MCT_CAPABILITY_BUFFER_MIN_SIZE) ? \
+        sizeof(cam_capability_t) : QCAMERA_MCT_CAPABILITY_BUFFER_MIN_SIZE), CAM_PAD_TO_4K)
+
 #define CEIL_DIVISION(n, d) ((n+d-1)/d)
 
 /** CAM_DUMP_TO_FILE:

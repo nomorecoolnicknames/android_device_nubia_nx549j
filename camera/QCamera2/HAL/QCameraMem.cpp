@@ -509,6 +509,9 @@ int QCameraMemory::allocOneBuffer(QCameraMemInfo &memInfo,
     memInfo.cached = cached;
     memInfo.heap_id = heap_id;
 
+    ALOGE("NX549J camera mapdiag: HAL1 ion alloc request=%zu actual=%zu fd=%d handle=%lx heap=0x%x cached=%d secure=%u",
+            size, (size_t)alloc.len, memInfo.fd, (unsigned long)memInfo.handle,
+            heap_id, cached, secure_mode);
     LOGD("ION buffer %lx with size %d allocated",
              (unsigned long)memInfo.handle, alloc.len);
     return OK;

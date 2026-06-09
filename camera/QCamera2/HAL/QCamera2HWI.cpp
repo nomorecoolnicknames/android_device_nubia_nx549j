@@ -2327,20 +2327,20 @@ int QCamera2HardwareInterface::initCapabilities(uint32_t cameraId,
 
     /* Allocate memory for capability buffer */
     capabilityHeap = new QCameraHeapMemory(QCAMERA_ION_USE_CACHE);
-    rc = capabilityHeap->allocate(1, sizeof(cam_capability_t), NON_SECURE);
+    rc = capabilityHeap->allocate(1, QCAMERA_CAPABILITY_BUFFER_SIZE, NON_SECURE);
     if(rc != OK) {
         LOGE("No memory for cappability");
         goto allocate_failed;
     }
 
     /* Map memory for capability buffer */
-    memset(DATA_PTR(capabilityHeap,0), 0, sizeof(cam_capability_t));
+    memset(DATA_PTR(capabilityHeap,0), 0, QCAMERA_CAPABILITY_BUFFER_SIZE);
 
     cam_buf_map_type_list bufMapList;
     rc = QCameraBufferMaps::makeSingletonBufMapList(
             CAM_MAPPING_BUF_TYPE_CAPABILITY,
             0 /*stream id*/, 0 /*buffer index*/, -1 /*plane index*/,
-            0 /*cookie*/, capabilityHeap->getFd(0), sizeof(cam_capability_t),
+            0 /*cookie*/, capabilityHeap->getFd(0), QCAMERA_CAPABILITY_BUFFER_SIZE,
             bufMapList, capabilityHeap->getPtr(0));
 
     if (rc == NO_ERROR) {

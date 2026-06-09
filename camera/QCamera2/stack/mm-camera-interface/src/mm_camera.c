@@ -1935,6 +1935,8 @@ int32_t mm_camera_map_buf(mm_camera_obj_t *my_obj,
     packet.payload.buf_map.fd = fd;
     packet.payload.buf_map.size = size;
     packet.payload.buf_map.buffer = buffer;
+    ALOGE("NX549J camera mapdiag: send map_buf session=%u type=%u fd=%d size=%zu buffer=%p",
+            my_obj->sessionid, buf_type, fd, size, buffer);
 #ifdef DAEMON_PRESENT
     rc = mm_camera_util_sendmsg(my_obj,
                                 &packet,
@@ -1982,6 +1984,16 @@ int32_t mm_camera_map_bufs(mm_camera_obj_t *my_obj,
         sendfds[i] = packet.payload.buf_map_list.buf_maps[i].fd;
         packet.payload.buf_map_list.buf_maps[i].buffer =
                 buf_map_list->buf_maps[i].buffer;
+        ALOGE("NX549J camera mapdiag: send map_bufs session=%u item=%u/%u type=%u stream=%u frame=%u plane=%d cookie=%u fd=%d size=%zu buffer=%p",
+                my_obj->sessionid, i, numbufs,
+                packet.payload.buf_map_list.buf_maps[i].type,
+                packet.payload.buf_map_list.buf_maps[i].stream_id,
+                packet.payload.buf_map_list.buf_maps[i].frame_idx,
+                packet.payload.buf_map_list.buf_maps[i].plane_idx,
+                packet.payload.buf_map_list.buf_maps[i].cookie,
+                packet.payload.buf_map_list.buf_maps[i].fd,
+                packet.payload.buf_map_list.buf_maps[i].size,
+                packet.payload.buf_map_list.buf_maps[i].buffer);
     }
     for (i = numbufs; i < CAM_MAX_NUM_BUFS_PER_STREAM; i++) {
         packet.payload.buf_map_list.buf_maps[i].fd = -1;

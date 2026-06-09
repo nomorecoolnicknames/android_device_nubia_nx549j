@@ -6263,12 +6263,14 @@ int32_t QCameraParameters::allocate()
         return NO_MEMORY;
     }
 
-    rc = m_pParamHeap->allocate(1, sizeof(parm_buffer_t), NON_SECURE);
+    rc = m_pParamHeap->allocate(1, QCAMERA_PARM_BUFFER_SIZE, NON_SECURE);
     if(rc != OK) {
         rc = NO_MEMORY;
         LOGE("Error!! Param buffers have not been allocated");
         delete m_pParamHeap;
         m_pParamHeap = NULL;
+    } else {
+        memset(DATA_PTR(m_pParamHeap, 0), 0, QCAMERA_PARM_BUFFER_SIZE);
     }
 
     return rc;
@@ -6309,7 +6311,7 @@ int32_t QCameraParameters::init(cam_capability_t *capabilities,
     rc = QCameraBufferMaps::makeSingletonBufMapList(
             CAM_MAPPING_BUF_TYPE_PARM_BUF, 0 /*stream id*/,
             0 /*buffer index*/, -1 /*plane index*/, 0 /*cookie*/,
-            m_pParamHeap->getFd(0), sizeof(parm_buffer_t), bufMapList,
+            m_pParamHeap->getFd(0), QCAMERA_PARM_BUFFER_SIZE, bufMapList,
                     m_pParamHeap->getPtr(0));
 
     if (rc == NO_ERROR) {
