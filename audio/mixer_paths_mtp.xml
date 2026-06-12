@@ -88,8 +88,11 @@
     <ctl name="SpkrMono WSA_RDAC" value="ZERO" />
     <ctl name="SpkrMono BOOST Switch" value="1" />
     <ctl name="EAR PA Gain" value="POS_6_DB" />
-    <ctl name="EAR PA Gain" value="POS_1P5_DB" />
-    <ctl name="EAR PA Boost" value="ENABLE" />
+    <!-- NX549J: match working stock A9 (highwaystar) defaults: single EAR PA
+         Gain POS_6_DB and EAR PA Boost DISABLE. The previous duplicate
+         POS_1P5_DB + Boost ENABLE kept the earpiece boost converter armed at
+         all times - a pop source on sdm660-cdc PA route transitions. -->
+    <ctl name="EAR PA Boost" value="DISABLE" />
     <ctl name="Speaker Boost" value="DISABLE" />
     <ctl name="MI2S_RX Channels" value="One" />
     <ctl name="MI2S_TX Channels" value="One" />
