@@ -58,15 +58,14 @@ service gx_fpd /vendor/bin/gx_fpd
     group system
     writepid /dev/cpuset/system-background/tasks
 
-# NX549J attempt516 ISOLATION: fps_hal (Nubia 7.1 Goodix HAL blob) crash-loops
-# every ~5s in goodix_sensor_init (null deref) on LOS 18.1, flooding logd and
-# dropbox. Do not auto-start it until a compatible HAL is ported.
-# Rollback: restore the two property triggers below.
-#on property:goodix.fp.service.ready=1
-#   start fps_hal
-#
-#on property:persist.sys.fp.onstart=1
-#   start fps_hal
+# NX549J: Goodix fps_hal property-start triggers. The earlier ~5s crash-loop
+# in goodix_sensor_init no longer reproduces (trustlet loads, openHal succeeds,
+# 0 HAL deaths over hours), so restore the normal start triggers.
+on property:goodix.fp.service.ready=1
+   start fps_hal
+
+on property:persist.sys.fp.onstart=1
+   start fps_hal
 
 service goodix_script /vendor/bin/init.goodix.sh
     class late_start
