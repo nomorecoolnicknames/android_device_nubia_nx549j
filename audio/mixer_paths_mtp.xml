@@ -994,13 +994,14 @@
         <ctl name="VoiceMMode1_Tx Mixer TERT_MI2S_TX_MMode1" value="1" />
     </path>
 
+    <!-- NX549J: voice-speaker downlink must use PRI_MI2S_RX, not QUIN_MI2S_RX.
+         The internal sdm660 codec (LINE_OUT speaker) is wired to PRI_MI2S_RX;
+         QUIN_MI2S_RX is bound in the kernel machine driver (msm8952.c) to
+         max98927/dummy/HDMI which this device does not use, so routing voice
+         speaker RX to QUIN sent the modem downlink into a dead port -> silent
+         speakerphone. (Duplicate QUIN block also collapsed.) -->
     <path name="voice-call speaker">
-        <ctl name="QUIN_MI2S_RX_Voice Mixer VoiceMMode1" value="1" />
-        <ctl name="VoiceMMode1_Tx Mixer TERT_MI2S_TX_MMode1" value="1" />
-    </path>
-
-    <path name="voice-call speaker">
-        <ctl name="QUIN_MI2S_RX_Voice Mixer VoiceMMode1" value="1" />
+        <ctl name="PRI_MI2S_RX_Voice Mixer VoiceMMode1" value="1" />
         <ctl name="VoiceMMode1_Tx Mixer TERT_MI2S_TX_MMode1" value="1" />
     </path>
 
