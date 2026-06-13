@@ -37,17 +37,16 @@ PRODUCT_PACKAGES += \
     libmm-qcamera
 
 # Fingerprint
-# NX549J: Goodix fingerprint. The earlier crash-loop (SIGSEGV in
-# goodix_sensor_init via set_active_group during openHal) no longer reproduces
-# on the current build: the goodixfp QSEE trustlet loads, gx_ta_send_command
-# succeeds, openHal completes and the HAL runs for hours with 0 deaths
-# (dumpsys fingerprint: "HAL deaths since last reboot: 0"). Re-enabling the
-# feature so FingerprintService can enroll/authenticate again.
+# NX549J attempt516 ISOLATION: the stock Nubia 7.1 Goodix HAL blob crash-loops
+# on LOS 18.1 (SIGSEGV in goodix_sensor_init via set_active_group). Keep the
+# service binary installed for future bring-up, but drop the feature
+# declaration so FingerprintService never lazy-starts it.
+# Rollback: restore the android.hardware.fingerprint.xml copy below.
 PRODUCT_PACKAGES += \
     android.hardware.biometrics.fingerprint@2.1-service.nubia
 
-PRODUCT_COPY_FILES += \
-    frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
+#PRODUCT_COPY_FILES += \
+#    frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
 
 # NFC
 PRODUCT_PACKAGES += \
