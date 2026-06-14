@@ -1110,13 +1110,16 @@
         <ctl name="VoiceMMode1_Tx Mixer TERT_MI2S_TX_MMode1" value="1" />
     </path>
 
+    <!-- NX549J: voice-speaker downlink MUST use PRI_MI2S_RX. The internal sdm660
+         codec (LINE_OUT speaker) is wired to PRI_MI2S_RX; QUIN_MI2S_RX binds in the
+         kernel machine driver to an unused max98927/dummy port, so routing
+         speakerphone downlink to QUIN gave silent/garbled audio. Commit da23740
+         fixed only the legacy "voice-call speaker" path NAME; the Android 11 HAL
+         actually applies THIS "voicemmode1-call speaker" path, which still drove
+         QUIN. Confirmed live 2026-06-13: speaker downlink audio works after QUIN->PRI.
+         Duplicate block collapsed. -->
     <path name="voicemmode1-call speaker">
-        <ctl name="QUIN_MI2S_RX_Voice Mixer VoiceMMode1" value="1" />
-        <ctl name="VoiceMMode1_Tx Mixer TERT_MI2S_TX_MMode1" value="1" />
-    </path>
-
-    <path name="voicemmode1-call speaker">
-        <ctl name="QUIN_MI2S_RX_Voice Mixer VoiceMMode1" value="1" />
+        <ctl name="PRI_MI2S_RX_Voice Mixer VoiceMMode1" value="1" />
         <ctl name="VoiceMMode1_Tx Mixer TERT_MI2S_TX_MMode1" value="1" />
     </path>
 
