@@ -114,15 +114,27 @@ static bool nx549jBringupNoPp()
 
 static bool nx549jBringupNoPpStreamType(cam_stream_type_t stream_type)
 {
+    /*
+     * NX549J: the black-preview root cause is that the preview stream gets
+     * CAM_QCOM_FEATURE_CROP|SCALE added unconditionally, which diverts it
+     * through CPP; CPP then fails to resolve the gralloc output buffer's
+     * physical address ("error gettting output physical address") and drops
+     * the frame -> black. The preview is already sensor-native 1920x1080 so
+     * CROP/SCALE are superfluous. Zeroing pp for preview lets VFE write the
+     * display buffer directly (VFE already maps + completes it). Restrict the
+     * no-pp override to the DISPLAY-path streams only: applying it to
+     * SNAPSHOT / reprocess zeroes pp the snapshot pipeline needs and SIGSEGVs
+     * the daemon (observed). Snapshot keeps its pp.
+     */
     switch (stream_type) {
     case CAM_STREAM_TYPE_PREVIEW:
     case CAM_STREAM_TYPE_POSTVIEW:
+    case CAM_STREAM_TYPE_CALLBACK:
+        return true;
     case CAM_STREAM_TYPE_SNAPSHOT:
     case CAM_STREAM_TYPE_VIDEO:
-    case CAM_STREAM_TYPE_CALLBACK:
     case CAM_STREAM_TYPE_IMPL_DEFINED:
     case CAM_STREAM_TYPE_OFFLINE_PROC:
-        return true;
     default:
         return false;
     }
