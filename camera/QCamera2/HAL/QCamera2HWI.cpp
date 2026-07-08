@@ -3419,9 +3419,6 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
             (stream_type == CAM_STREAM_TYPE_PREVIEW) &&
             nx549jBringupPropEnabled(
                     "persist.camera.nx549j.preview_no_crop_scale");
-    if (nx549j_prev_no_cs)
-        LOGW("NX549J bringup: preview CROP/SCALE skipped (no-divert), type %d",
-                stream_type);
     if (!nx549j_prev_no_cs &&
             !((needReprocess()) && (CAM_STREAM_TYPE_SNAPSHOT == stream_type ||
             CAM_STREAM_TYPE_RAW == stream_type))) {
@@ -3431,6 +3428,18 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
         if (gCamCapability[mCameraId]->qcom_supported_feature_mask &
                 CAM_QCOM_FEATURE_SCALE)
             streamInfo->pp_config.feature_mask |= CAM_QCOM_FEATURE_SCALE;
+    }
+    if (nx549j_prev_no_cs) {
+        /*
+         * Not enough to skip adding CROP/SCALE: the base pp mask already
+         * carries CPP features (e.g. SCALE) that still divert preview through
+         * CPP -> unmapped output buffer -> black. Zero the whole preview pp so
+         * VFE writes the display buffer directly. LOGE so it survives the
+         * WARN-suppressed log level. Snapshot pp untouched.
+         */
+        LOGE("NX549J bringup: preview pp zeroed for direct VFE path, type %d 0x%llx -> 0",
+                stream_type, streamInfo->pp_config.feature_mask);
+        streamInfo->pp_config.feature_mask = CAM_QCOM_FEATURE_NONE;
     }
 
     if (nx549jBringupNoPp() &&
