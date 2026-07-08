@@ -3407,7 +3407,23 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
                 mParameters.getDenoiseProcessPlate(CAM_INTF_PARM_WAVELET_DENOISE);
     }
 
-    if (!((needReprocess()) && (CAM_STREAM_TYPE_SNAPSHOT == stream_type ||
+    /*
+     * NX549J: CROP|SCALE on the preview stream is what diverts it through
+     * CPP, where the gralloc output buffer's physical address can't be
+     * resolved -> frame dropped -> black preview. The preview is sensor-native
+     * 1920x1080, so these are superfluous. Skip them for PREVIEW (prop-gated)
+     * so preview stays on the direct VFE->display path. Snapshot/raw keep
+     * their pp. This does NOT touch the crash-prone force_bringup_no_pp path.
+     */
+    bool nx549j_prev_no_cs =
+            (stream_type == CAM_STREAM_TYPE_PREVIEW) &&
+            nx549jBringupPropEnabled(
+                    "persist.camera.nx549j.preview_no_crop_scale");
+    if (nx549j_prev_no_cs)
+        LOGW("NX549J bringup: preview CROP/SCALE skipped (no-divert), type %d",
+                stream_type);
+    if (!nx549j_prev_no_cs &&
+            !((needReprocess()) && (CAM_STREAM_TYPE_SNAPSHOT == stream_type ||
             CAM_STREAM_TYPE_RAW == stream_type))) {
         if (gCamCapability[mCameraId]->qcom_supported_feature_mask &
                 CAM_QCOM_FEATURE_CROP)
