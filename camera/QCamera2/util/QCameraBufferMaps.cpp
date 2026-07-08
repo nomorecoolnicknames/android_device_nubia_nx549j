@@ -183,8 +183,11 @@ uint32_t QCameraBufferMaps::enqueue(cam_mapping_buf_type pType,
     mBufMapList.buf_maps[pos].size = pSize;
     mBufMapList.buf_maps[pos].buffer = buffer;
 
-    ALOGE("NX549J camera mapdiag: enqueue pos=%u type=%d stream=%u frame=%u plane=%d cookie=%u fd=%d size=%zu buffer=%p",
-            pos, pType, pStreamId, pFrameIndex, pPlaneIndex, pCookie, pFd, pSize, buffer);
+    ALOGE("NX549J camera mapdiag: enqueue pos=%u type=%d stream=%u "
+            "frame=%u plane=%d cookie=%u fd=%d size=%zu buffer=%p "
+            "entry_size=%zu",
+            pos, pType, pStreamId, pFrameIndex, pPlaneIndex, pCookie, pFd,
+            pSize, buffer, sizeof(cam_buf_map_type));
 
     return NO_ERROR;
 }

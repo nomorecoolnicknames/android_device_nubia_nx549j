@@ -30,6 +30,8 @@
 // System dependencies
 #include <stdio.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#include <cutils/properties.h>
 #include <media/msm_cam_sensor.h>
 
 // Camera dependencies
@@ -45,6 +47,14 @@ extern "C" {
 volatile uint32_t gCamHal3LogLevel = 1;
 
 namespace qcamera {
+
+static bool nx549jBringupSkipFlashReservation()
+{
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get("persist.camera.nx549j.skip_flash_reservation", value, "1");
+    return atoi(value) > 0;
+}
 
 /*===========================================================================
  * FUNCTION   : getInstance
@@ -334,14 +344,18 @@ int32_t QCameraFlash::reserveFlashForCamera(const int camera_id)
                 hasFlash,
                 flashNode);
 
-        if (m_callbacks == NULL ||
-                m_callbacks->torch_mode_status_change == NULL) {
-            LOGE("Callback is not defined!");
-            retVal = -ENOSYS;
-        } else if (!hasFlash) {
+        if (!hasFlash) {
             LOGD("Suppressing callback "
                     "because no flash exists for camera id: %d",
                     camera_id);
+        } else if (nx549jBringupSkipFlashReservation()) {
+            LOGW("NX549J bringup: skip torch unavailable callback "
+                 "camera=%d persist.camera.nx549j.skip_flash_reservation=1",
+                 camera_id);
+        } else if (m_callbacks == NULL ||
+                m_callbacks->torch_mode_status_change == NULL) {
+            LOGE("Callback is not defined!");
+            retVal = -ENOSYS;
         } else {
             char cameraIdStr[STRING_LENGTH_OF_64_BIT_NUMBER];
             snprintf(cameraIdStr, STRING_LENGTH_OF_64_BIT_NUMBER,
@@ -389,14 +403,18 @@ int32_t QCameraFlash::releaseFlashFromCamera(const int camera_id)
                 hasFlash,
                 flashNode);
 
-        if (m_callbacks == NULL ||
-                m_callbacks->torch_mode_status_change == NULL) {
-            LOGE("Callback is not defined!");
-            retVal = -ENOSYS;
-        } else if (!hasFlash) {
+        if (!hasFlash) {
             LOGD("Suppressing callback "
                     "because no flash exists for camera id: %d",
                     camera_id);
+        } else if (nx549jBringupSkipFlashReservation()) {
+            LOGW("NX549J bringup: skip torch available callback "
+                 "camera=%d persist.camera.nx549j.skip_flash_reservation=1",
+                 camera_id);
+        } else if (m_callbacks == NULL ||
+                m_callbacks->torch_mode_status_change == NULL) {
+            LOGE("Callback is not defined!");
+            retVal = -ENOSYS;
         } else {
             char cameraIdStr[STRING_LENGTH_OF_64_BIT_NUMBER];
             snprintf(cameraIdStr, STRING_LENGTH_OF_64_BIT_NUMBER,

@@ -457,17 +457,43 @@ void QCamera2HardwareInterface::capture_channel_cb_routine(mm_camera_super_buf_t
     char value[PROPERTY_VALUE_MAX];
     LOGH("[KPI Perf]: E PROFILE_YUV_CB_TO_HAL");
     QCamera2HardwareInterface *pme = (QCamera2HardwareInterface *)userdata;
-    if (pme == NULL ||
+    if (recvd_frame == NULL ||
+        pme == NULL ||
         pme->mCameraHandle == NULL ||
         pme->mCameraHandle->camera_handle != recvd_frame->camera_handle){
-        LOGE("camera obj not valid");
+        LOGE("NX549J bringup: capture cb invalid frame=%p pme=%p", recvd_frame, pme);
         return;
+    }
+
+    LOGE("NX549J bringup: capture cb begin ch=0x%x num_bufs=%u camera=0x%x "
+            "ready=%u unlock_aec=%u",
+            recvd_frame->ch_id,
+            recvd_frame->num_bufs,
+            recvd_frame->camera_handle,
+            recvd_frame->bReadyForPrepareSnapshot,
+            recvd_frame->bUnlockAEC);
+    for (uint32_t i = 0; i < recvd_frame->num_bufs; i++) {
+        if (recvd_frame->bufs[i] == NULL) {
+            LOGE("NX549J bringup: capture cb buf[%u] null", i);
+            continue;
+        }
+        LOGE("NX549J bringup: capture cb buf[%u] stream_id=%u type=%d "
+                "idx=%u frame=%u fd=%d len=%u",
+                i,
+                recvd_frame->bufs[i]->stream_id,
+                recvd_frame->bufs[i]->stream_type,
+                recvd_frame->bufs[i]->buf_idx,
+                recvd_frame->bufs[i]->frame_idx,
+                recvd_frame->bufs[i]->fd,
+                recvd_frame->bufs[i]->frame_len);
     }
 
     QCameraChannel *pChannel = pme->m_channels[QCAMERA_CH_TYPE_CAPTURE];
     if (pChannel == NULL ||
         pChannel->getMyHandle() != recvd_frame->ch_id) {
-        LOGE("Capture channel doesn't exist, return here");
+        LOGE("NX549J bringup: capture channel missing expected=0x%x got=0x%x",
+                pChannel != NULL ? pChannel->getMyHandle() : 0,
+                recvd_frame->ch_id);
         return;
     }
 
@@ -519,9 +545,13 @@ void QCamera2HardwareInterface::capture_channel_cb_routine(mm_camera_super_buf_t
 
     // Wait on Postproc initialization if needed
     // then send to postprocessor
-    if ((NO_ERROR != pme->waitDeferredWork(pme->mReprocJob)) ||
-            (NO_ERROR != pme->m_postprocessor.processData(frame))) {
-        LOGE("Failed to trigger process data");
+    int32_t wait_rc = pme->waitDeferredWork(pme->mReprocJob);
+    LOGE("NX549J bringup: capture cb waitReproc rc=%d job=%u", wait_rc, pme->mReprocJob);
+    int32_t process_rc = (wait_rc == NO_ERROR) ?
+            pme->m_postprocessor.processData(frame) : wait_rc;
+    LOGE("NX549J bringup: capture cb processData rc=%d", process_rc);
+    if (process_rc != NO_ERROR) {
+        LOGE("NX549J bringup: Failed to trigger process data");
         pChannel->bufDone(recvd_frame);
         free(frame);
         frame = NULL;
@@ -907,8 +937,12 @@ void QCamera2HardwareInterface::preview_stream_cb_routine(mm_camera_super_buf_t 
     pthread_mutex_unlock(&pme->mGrallocLock);
 
     if (discardFrame) {
-        LOGH("preview is not running, no need to process");
+        LOGW("NX549J bringup: preview discard idx=%u frame=%u sync=%d, "
+                "returning buffer without display enqueue",
+                frame->buf_idx, frame->frame_idx, stream->isSyncCBEnabled());
         stream->bufDone(frame->buf_idx);
+        free(super_frame);
+        return;
     }
 
     uint32_t idx = frame->buf_idx;
@@ -2083,8 +2117,14 @@ int32_t QCamera2HardwareInterface::updateMetadata(metadata_buffer_t *pMetaData)
 
     //CPP CDS
     int32_t prmCDSMode = mParameters.getCDSMode();
-    ADD_SET_PARAM_ENTRY_TO_BATCH(pMetaData,
-            CAM_INTF_PARM_CDS_MODE, prmCDSMode);
+    char bringupNoPp[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_no_pp", bringupNoPp, "0");
+    if (atoi(bringupNoPp) > 0) {
+        LOGW("NX549J bringup: skip metadata CDS set-param while force_bringup_no_pp=1");
+    } else {
+        ADD_SET_PARAM_ENTRY_TO_BATCH(pMetaData,
+                CAM_INTF_PARM_CDS_MODE, prmCDSMode);
+    }
 
     return rc;
 }
@@ -2237,10 +2277,6 @@ void QCamera2HardwareInterface::metadata_stream_cb_routine(mm_camera_super_buf_t
                 }
                 IF_META_AVAILABLE(uint32_t, focusMode, CAM_INTF_PARM_FOCUS_MODE, pMetaData) {
                     payload->focus_data.focus_mode = (cam_focus_mode_type)(*focusMode);
-                }
-                IF_META_AVAILABLE(uint8_t, isDepthFocus,
-                        CAM_INTF_META_FOCUS_DEPTH_INFO, pMetaData) {
-                    payload->focus_data.isDepth = *isDepthFocus;
                 }
                 int32_t rc = pme->processEvt(QCAMERA_SM_EVT_EVT_INTERNAL, payload);
                 if (rc != NO_ERROR) {
@@ -2441,30 +2477,6 @@ void QCamera2HardwareInterface::metadata_stream_cb_routine(mm_camera_super_buf_t
         if (pme->mExifParams.debug_params) {
             pme->mExifParams.debug_params->stats_debug_params = *stats_exif_debug_params;
             pme->mExifParams.debug_params->stats_debug_params_valid = TRUE;
-        }
-    }
-
-    IF_META_AVAILABLE(cam_bestats_buffer_exif_debug_t, bestats_exif_debug_params,
-            CAM_INTF_META_EXIF_DEBUG_BESTATS, pMetaData) {
-        if (pme->mExifParams.debug_params) {
-            pme->mExifParams.debug_params->bestats_debug_params = *bestats_exif_debug_params;
-            pme->mExifParams.debug_params->bestats_debug_params_valid = TRUE;
-        }
-    }
-
-    IF_META_AVAILABLE(cam_bhist_buffer_exif_debug_t, bhist_exif_debug_params,
-            CAM_INTF_META_EXIF_DEBUG_BHIST, pMetaData) {
-        if (pme->mExifParams.debug_params) {
-            pme->mExifParams.debug_params->bhist_debug_params = *bhist_exif_debug_params;
-            pme->mExifParams.debug_params->bhist_debug_params_valid = TRUE;
-        }
-    }
-
-    IF_META_AVAILABLE(cam_q3a_tuning_info_t, q3a_tuning_exif_debug_params,
-            CAM_INTF_META_EXIF_DEBUG_3A_TUNING, pMetaData) {
-        if (pme->mExifParams.debug_params) {
-            pme->mExifParams.debug_params->q3a_tuning_debug_params = *q3a_tuning_exif_debug_params;
-            pme->mExifParams.debug_params->q3a_tuning_debug_params_valid = TRUE;
         }
     }
 

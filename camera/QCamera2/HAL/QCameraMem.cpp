@@ -31,6 +31,7 @@
 // System dependencies
 #include <fcntl.h>
 #include <stdio.h>
+#include <cutils/properties.h>
 #include <utils/Errors.h>
 #define MMAN_H <SYSTEM_HEADER_PREFIX/mman.h>
 #include MMAN_H
@@ -1900,8 +1901,18 @@ int QCameraGrallocMemory::displayBuffer(uint32_t index)
     int err = NO_ERROR;
     int dequeuedIdx = BAD_INDEX;
 
+    if (index >= mBufferCount || index >= MM_CAMERA_MAX_NUM_FRAMES) {
+        LOGE("NX549J bringup: displayBuffer invalid index=%u count=%d "
+                "mappable=%d min_undequeued=%d",
+                index, mBufferCount, mMappableBuffers, mMinUndequeuedBuffers);
+        return BAD_INDEX;
+    }
+
     if (BUFFER_NOT_OWNED == mLocalFlag[index]) {
-        LOGE("buffer to be enqueued is not owned");
+        LOGE("NX549J bringup: displayBuffer not owned index=%u count=%d "
+                "mappable=%d min_undequeued=%d flag=%d",
+                index, mBufferCount, mMappableBuffers, mMinUndequeuedBuffers,
+                mLocalFlag[index]);
         return INVALID_OPERATION;
     }
 
@@ -1990,8 +2001,19 @@ int32_t QCameraGrallocMemory::enqueueBuffer(uint32_t index, nsecs_t timeStamp)
 {
     int32_t err = NO_ERROR;
 
+    if (index >= mBufferCount || index >= MM_CAMERA_MAX_NUM_FRAMES) {
+        LOGE("NX549J bringup: enqueueBuffer invalid index=%u count=%d "
+                "mappable=%d min_undequeued=%d timestamp=%lld",
+                index, mBufferCount, mMappableBuffers, mMinUndequeuedBuffers,
+                (long long)timeStamp);
+        return BAD_INDEX;
+    }
+
     if (BUFFER_NOT_OWNED == mLocalFlag[index]) {
-        LOGE("buffer to be enqueued is not owned");
+        LOGE("NX549J bringup: enqueueBuffer not owned index=%u count=%d "
+                "mappable=%d min_undequeued=%d flag=%d timestamp=%lld",
+                index, mBufferCount, mMappableBuffers, mMinUndequeuedBuffers,
+                mLocalFlag[index], (long long)timeStamp);
         return INVALID_OPERATION;
     }
 
@@ -2385,7 +2407,22 @@ int QCameraGrallocMemory::cacheOps(uint32_t index, unsigned int cmd)
  *==========================================================================*/
 int QCameraGrallocMemory::getRegFlags(uint8_t *regFlags) const
 {
+    char prop[PROPERTY_VALUE_MAX];
     int i = 0;
+    property_get("persist.camera.force_bringup_qbuf_all", prop, "0");
+    bool qbufAll = atoi(prop) > 0;
+    LOGE("NX549J bringup: gralloc getRegFlags qbuf_all=%d "
+            "buffer_count=%d mappable=%d min_undequeued=%d",
+            qbufAll, mBufferCount, mMappableBuffers, mMinUndequeuedBuffers);
+    if (qbufAll) {
+        for (i = 0; i < mMinUndequeuedBuffers; i ++)
+            regFlags[i] = 0;
+        for (; i < mMappableBuffers; i ++)
+            regFlags[i] = 1;
+        for (; i < mBufferCount; i ++)
+            regFlags[i] = 0;
+        return NO_ERROR;
+    }
     for (i = 0; i < mMinUndequeuedBuffers; i ++)
         regFlags[i] = 0;
     for (; i < mMappableBuffers; i ++)

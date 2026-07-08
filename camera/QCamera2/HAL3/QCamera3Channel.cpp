@@ -1581,10 +1581,6 @@ int32_t QCamera3ProcessingChannel::setReprocConfig(reprocess_config_t &reproc_cf
         return rc;
     }
 
-    IF_META_AVAILABLE(cam_hdr_param_t, hdr_info, CAM_INTF_PARM_HAL_BRACKETING_HDR, metadata) {
-        reproc_cfg.hdr_param = *hdr_info;
-    }
-
     return rc;
 }
 
@@ -3908,12 +3904,6 @@ int32_t QCamera3PicChannel::queueJpegSetting(uint32_t index, metadata_buffer_t *
     }
 
     settings->hdr_snapshot = 0;
-    IF_META_AVAILABLE(cam_hdr_param_t, hdr_info, CAM_INTF_PARM_HAL_BRACKETING_HDR, metadata) {
-        if (hdr_info->hdr_enable) {
-            settings->hdr_snapshot = 1;
-        }
-    }
-
 
     // Image description
     const char *eepromVersion = hal_obj->getEepromVersionInfo();

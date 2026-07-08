@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <cutils/properties.h>
 #include <media/msm_media_info.h>
 #define TIME_H <SYSTEM_HEADER_PREFIX/time.h>
 #include TIME_H
@@ -203,9 +204,48 @@ void mm_stream_handle_rcvd_buf(mm_stream_t *my_obj,
     LOGD("E, my_handle = 0x%x, fd = %d, state = %d",
           my_obj->my_hdl, my_obj->fd, my_obj->state);
 
+    if (buf_info != NULL && buf_info->buf != NULL &&
+            my_obj->stream_info != NULL &&
+            (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+             my_obj->is_bundled || has_cb)) {
+        uint32_t idx = buf_info->buf->buf_idx;
+        LOGE("NX549J camera superdiag: handle_rcvd enter hdl=0x%x "
+                "server_id=%d type=%d frame=%u idx=%u bundled=%u "
+                "linked=%u has_cb=%u ch=%p linked_ch=%p cmd_active=%u "
+                "ref=%u in_kernel=%u",
+                my_obj->my_hdl,
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_type,
+                buf_info->frame_idx,
+                idx,
+                my_obj->is_bundled,
+                my_obj->is_linked,
+                has_cb,
+                my_obj->ch_obj,
+                my_obj->linked_obj,
+                my_obj->cmd_thread.is_active,
+                idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                        my_obj->buf_status[idx].buf_refcnt : 0,
+                idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                        my_obj->buf_status[idx].in_kernel : 0);
+    }
+
     /* enqueue to super buf thread */
     if (my_obj->is_bundled) {
         rc = mm_stream_notify_channel(my_obj->ch_obj, buf_info);
+        if (buf_info != NULL && buf_info->buf != NULL &&
+                my_obj->stream_info != NULL &&
+                (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+                 has_cb)) {
+            LOGE("NX549J camera superdiag: handle_rcvd notify_channel "
+                    "hdl=0x%x server_id=%d type=%d frame=%u idx=%u rc=%d",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    buf_info->frame_idx,
+                    buf_info->buf->buf_idx,
+                    rc);
+        }
         if (rc < 0) {
             LOGE("Unable to notify channel");
         }
@@ -217,6 +257,19 @@ void mm_stream_handle_rcvd_buf(mm_stream_t *my_obj,
         my_obj->buf_status[buf_info->buf->buf_idx].buf_refcnt++;
 
         rc = mm_stream_notify_channel(my_obj->linked_obj, buf_info);
+        if (buf_info != NULL && buf_info->buf != NULL &&
+                my_obj->stream_info != NULL &&
+                (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+                 has_cb)) {
+            LOGE("NX549J camera superdiag: handle_rcvd notify_linked "
+                    "hdl=0x%x server_id=%d type=%d frame=%u idx=%u rc=%d",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    buf_info->frame_idx,
+                    buf_info->buf->buf_idx,
+                    rc);
+        }
         if (rc < 0) {
             LOGE("Unable to notify channel");
         }
@@ -320,6 +373,28 @@ static void mm_stream_data_notify(void* user_data)
         return;
     }
 
+    if (my_obj->stream_info != NULL &&
+            (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+             my_obj->is_bundled)) {
+        LOGE("NX549J camera superdiag: data_notify enter hdl=0x%x "
+                "server_id=%d type=%d fd=%d state=%d queued=%d "
+                "buf_num=%u bundled=%u linked=%u mode=%d planes=%u "
+                "no_frame=%u cb_active=%u",
+                my_obj->my_hdl,
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_type,
+                my_obj->fd,
+                my_obj->state,
+                my_obj->queued_buffer_count,
+                my_obj->buf_num,
+                my_obj->is_bundled,
+                my_obj->is_linked,
+                my_obj->stream_info->streaming_mode,
+                my_obj->frame_offset.num_planes,
+                my_obj->stream_info->noFrameExpected,
+                my_obj->cmd_thread.is_active);
+    }
+
     if (my_obj->stream_info->streaming_mode == CAM_STREAMING_MODE_BATCH) {
         length = 1;
     } else {
@@ -330,6 +405,15 @@ static void mm_stream_data_notify(void* user_data)
     rc = mm_stream_read_msm_frame(my_obj, &buf_info,
         (uint8_t)length);
     if (rc != 0) {
+        LOGE("NX549J camera superdiag: data_notify read fail "
+                "hdl=0x%x server_id=%d type=%d fd=%d rc=%d len=%u",
+                my_obj->my_hdl,
+                my_obj->server_stream_id,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->stream_type : -1,
+                my_obj->fd,
+                rc,
+                length);
         return;
     }
     uint32_t idx = buf_info.buf->buf_idx;
@@ -349,6 +433,30 @@ static void mm_stream_data_notify(void* user_data)
     }
     pthread_mutex_unlock(&my_obj->cb_lock);
 
+    if (my_obj->stream_info != NULL &&
+            (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+             my_obj->is_bundled || has_cb)) {
+        LOGE("NX549J camera superdiag: data_notify hdl=0x%x server_id=%d "
+                "type=%d frame=%u idx=%u flags=0x%x ts=%lld.%09lld "
+                "has_cb=%u bundled=%d state=%d buf_type=%d ref_before=%u "
+                "in_kernel=%u queued=%d",
+                my_obj->my_hdl,
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_type,
+                buf_info.frame_idx,
+                idx,
+                buf_info.buf != NULL ? buf_info.buf->flags : 0,
+                buf_info.buf != NULL ? (long long)buf_info.buf->ts.tv_sec : 0,
+                buf_info.buf != NULL ? (long long)buf_info.buf->ts.tv_nsec : 0,
+                has_cb,
+                my_obj->is_bundled,
+                my_obj->state,
+                buf_info.buf != NULL ? buf_info.buf->stream_type : -1,
+                my_obj->buf_status[idx].buf_refcnt,
+                my_obj->buf_status[idx].in_kernel,
+                my_obj->queued_buffer_count);
+    }
+
     pthread_mutex_lock(&my_obj->buf_lock);
     /* update buffer location */
     my_obj->buf_status[idx].in_kernel = 0;
@@ -360,6 +468,22 @@ static void mm_stream_data_notify(void* user_data)
     }
     my_obj->buf_status[idx].buf_refcnt =
         (uint8_t)(my_obj->buf_status[idx].buf_refcnt + has_cb);
+    if (my_obj->stream_info != NULL &&
+            (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+             my_obj->is_bundled || has_cb)) {
+        LOGE("NX549J camera superdiag: data_notify ref_update hdl=0x%x "
+                "server_id=%d type=%d frame=%u idx=%u ref_after=%u "
+                "in_kernel=%u has_cb=%u bundled=%u",
+                my_obj->my_hdl,
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_type,
+                buf_info.frame_idx,
+                idx,
+                my_obj->buf_status[idx].buf_refcnt,
+                my_obj->buf_status[idx].in_kernel,
+                has_cb,
+                my_obj->is_bundled);
+    }
     pthread_mutex_unlock(&my_obj->buf_lock);
 
     mm_stream_handle_rcvd_buf(my_obj, &buf_info, has_cb);
@@ -1164,6 +1288,9 @@ int32_t mm_stream_streamon(mm_stream_t *my_obj)
 {
     int32_t rc = 0;
     int8_t i;
+    uint32_t plane;
+    char streamon_delay_prop[PROPERTY_VALUE_MAX];
+    int32_t streamon_delay_ms = 0;
     enum v4l2_buf_type buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
     LOGD("E, my_handle = 0x%x, fd = %d, state = %d",
@@ -1203,12 +1330,164 @@ int32_t mm_stream_streamon(mm_stream_t *my_obj)
             my_obj->my_hdl, my_obj->fd, my_obj->state, cam_obj->sessionid,
             my_obj->server_stream_id);
 
+    if (my_obj->stream_info != NULL) {
+        uint32_t mapped = 0;
+        uint32_t pending = 0;
+        uint32_t failed = 0;
+        uint32_t in_kernel = 0;
+
+        pthread_mutex_lock(&my_obj->buf_lock);
+        for (i = 0; i < my_obj->buf_num; i++) {
+            if (my_obj->buf_status[i].map_status > 0) {
+                mapped++;
+            } else if (my_obj->buf_status[i].map_status == 0) {
+                pending++;
+            } else {
+                failed++;
+            }
+            if (my_obj->buf_status[i].in_kernel) {
+                in_kernel++;
+            }
+        }
+        pthread_mutex_unlock(&my_obj->buf_lock);
+
+        ALOGE("NX549J camera streamdiag: streamon pre session=%d stream_id=%d "
+                "svr=%u type=%d fmt=%d dim=%dx%d planes=%d frame_len=%d "
+                "stream_bufs=%d local_bufs=%d queued=%d mapped=%u pending=%u "
+                "failed=%u in_kernel=%u mode=%d burst=%u is=%d secure=%d "
+                "perf=%d dis=%u no_frame=%u pp=0x%llx",
+                cam_obj->sessionid,
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_svr_id,
+                my_obj->stream_info->stream_type,
+                my_obj->stream_info->fmt,
+                my_obj->stream_info->dim.width,
+                my_obj->stream_info->dim.height,
+                my_obj->stream_info->buf_planes.plane_info.num_planes,
+                my_obj->stream_info->buf_planes.plane_info.frame_len,
+                my_obj->stream_info->num_bufs,
+                my_obj->buf_num,
+                my_obj->queued_buffer_count,
+                mapped,
+                pending,
+                failed,
+                in_kernel,
+                my_obj->stream_info->streaming_mode,
+                my_obj->stream_info->num_of_burst,
+                my_obj->stream_info->is_type,
+                my_obj->stream_info->is_secure,
+                my_obj->stream_info->perf_mode,
+                my_obj->stream_info->dis_enable,
+                my_obj->stream_info->noFrameExpected,
+                my_obj->stream_info->pp_config.feature_mask);
+        for (plane = 0;
+                plane < my_obj->stream_info->buf_planes.plane_info.num_planes &&
+                plane < VIDEO_MAX_PLANES;
+                plane++) {
+            ALOGE("NX549J camera streamdiag: streamon plane stream_id=%d "
+                    "plane=%u len=%u stride=%d scanline=%d wxh=%dx%d "
+                    "offset=%u meta_len=%u meta_stride=%d meta_scanline=%d",
+                    my_obj->server_stream_id,
+                    plane,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].len,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].stride,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].scanline,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].width,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].height,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].offset,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].meta_len,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].meta_stride,
+                    my_obj->stream_info->buf_planes.plane_info.mp[plane].meta_scanline);
+        }
+    } else {
+        ALOGE("NX549J camera streamdiag: streamon pre stream_id=%d has no stream_info",
+                my_obj->server_stream_id);
+    }
+
+    if (my_obj->stream_info != NULL &&
+            my_obj->stream_info->stream_type == CAM_STREAM_TYPE_SNAPSHOT) {
+        property_get("persist.camera.bringup_snapshot_streamon_delay_ms",
+                streamon_delay_prop, "0");
+    } else {
+        property_get("persist.camera.bringup_streamon_delay_ms",
+                streamon_delay_prop, "0");
+    }
+    streamon_delay_ms = atoi(streamon_delay_prop);
+    if (streamon_delay_ms < 0) {
+        streamon_delay_ms = 0;
+    } else if (streamon_delay_ms > 5000) {
+        ALOGE("NX549J camera streamdiag: streamon delay clamp prop=%s to 5000ms",
+                streamon_delay_prop);
+        streamon_delay_ms = 5000;
+    }
+    /*
+     * NX549J ANR FIX (camera black-preview + "вылет"):
+     * The bringup streamon delay (persist.camera.bringup_streamon_delay_ms,
+     * default 2200) was a cold-bring-up cushion for the original stream-on
+     * race. mm_stream_streamon() runs synchronously inside the API1
+     * Camera.setParameters() round-trip (QCamera2HWI.cpp set_parameters ->
+     * SET_PARAMS_RESTART -> waitAPIResult). On every param-change preview
+     * restart that delay re-blocked snap's main thread >2.2s, so the first
+     * MotionEvent ANR'd (~5006ms) and the app exited with a black viewfinder.
+     * The stream-on now returns CMD_SUCCESS immediately on kernel #240, so the
+     * cushion is only ever needed (if at all) on the FIRST non-metadata
+     * stream-on of a camera session. Make it one-shot per session id: apply
+     * it once at cold preview bring-up, NEVER on the restart path that ANRs.
+     */
+    {
+        static uint32_t s_streamon_delay_done_session = 0xFFFFFFFFu;
+        int32_t apply_streamon_delay =
+                (streamon_delay_ms > 0 && my_obj->stream_info != NULL &&
+                 my_obj->stream_info->stream_type != CAM_STREAM_TYPE_METADATA &&
+                 my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PARM &&
+                 s_streamon_delay_done_session != cam_obj->sessionid);
+        if (apply_streamon_delay) {
+            s_streamon_delay_done_session = cam_obj->sessionid;
+            ALOGE("NX549J camera streamdiag: streamon delay begin session=%d "
+                    "stream_id=%d type=%d delay_ms=%d snapshot_override=%d (one-shot)",
+                    cam_obj->sessionid,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    streamon_delay_ms,
+                    my_obj->stream_info->stream_type == CAM_STREAM_TYPE_SNAPSHOT);
+            usleep(streamon_delay_ms * 1000);
+            ALOGE("NX549J camera streamdiag: streamon delay end session=%d "
+                    "stream_id=%d type=%d delay_ms=%d snapshot_override=%d (one-shot)",
+                    cam_obj->sessionid,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    streamon_delay_ms,
+                    my_obj->stream_info->stream_type == CAM_STREAM_TYPE_SNAPSHOT);
+        } else if (streamon_delay_ms > 0 && my_obj->stream_info != NULL &&
+                my_obj->stream_info->stream_type != CAM_STREAM_TYPE_METADATA &&
+                my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PARM) {
+            ALOGE("NX549J camera streamdiag: streamon delay SKIPPED (one-shot "
+                    "already spent) session=%d stream_id=%d type=%d",
+                    cam_obj->sessionid,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type);
+        }
+    }
+
     rc = ioctl(my_obj->fd, VIDIOC_STREAMON, &buf_type);
-    if (rc < 0 && my_obj->stream_info->num_bufs != 0) {
-        LOGE("ioctl VIDIOC_STREAMON failed: rc=%d, errno %d",
-                rc, errno);
+    if (rc < 0 && (my_obj->stream_info == NULL ||
+            my_obj->stream_info->num_bufs != 0)) {
+        ALOGE("NX549J camera streamdiag: streamon ioctl failed stream_id=%d "
+                "type=%d rc=%d errno=%d",
+                my_obj->server_stream_id,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->stream_type : -1,
+                rc,
+                errno);
         goto error_case;
     }
+    ALOGE("NX549J camera streamdiag: streamon ioctl done stream_id=%d "
+            "type=%d rc=%d errno=%d",
+            my_obj->server_stream_id,
+            my_obj->stream_info != NULL ?
+                    my_obj->stream_info->stream_type : -1,
+            rc,
+            errno);
 
 #ifndef DAEMON_PRESENT
     cam_shim_packet_t *shim_cmd;
@@ -1526,10 +1805,42 @@ int32_t mm_stream_read_msm_frame(mm_stream_t * my_obj,
     vb.m.planes = &planes[0];
     vb.length = num_planes;
 
+    if (my_obj->stream_info != NULL &&
+            (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+             my_obj->is_bundled)) {
+        LOGE("NX549J camera superdiag: dqbuf begin hdl=0x%x server_id=%d "
+                "type=%d fd=%d length=%u queued_before=%d state=%d "
+                "buf_num=%u bundled=%u",
+                my_obj->my_hdl,
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_type,
+                my_obj->fd,
+                num_planes,
+                my_obj->queued_buffer_count,
+                my_obj->state,
+                my_obj->buf_num,
+                my_obj->is_bundled);
+    }
+
     rc = ioctl(my_obj->fd, VIDIOC_DQBUF, &vb);
     if (0 > rc) {
         LOGE("VIDIOC_DQBUF ioctl call failed on stream type %d (rc=%d): %s",
              my_obj->stream_info->stream_type, rc, strerror(errno));
+        if (my_obj->stream_info != NULL &&
+                (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+                 my_obj->is_bundled)) {
+            LOGE("NX549J camera superdiag: dqbuf fail hdl=0x%x "
+                    "server_id=%d type=%d fd=%d rc=%d errno=%d queued=%d "
+                    "length=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    my_obj->fd,
+                    rc,
+                    errno,
+                    my_obj->queued_buffer_count,
+                    num_planes);
+        }
     } else {
         pthread_mutex_lock(&my_obj->buf_lock);
         my_obj->queued_buffer_count--;
@@ -1563,6 +1874,35 @@ int32_t mm_stream_read_msm_frame(mm_stream_t * my_obj,
 
         buf_info->buf->is_uv_subsampled =
             (vb.reserved == V4L2_PIX_FMT_NV14 || vb.reserved == V4L2_PIX_FMT_NV41);
+
+        if (my_obj->stream_info != NULL &&
+                (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+                 my_obj->is_bundled)) {
+            LOGE("NX549J camera superdiag: dqbuf done hdl=0x%x "
+                    "server_id=%d type=%d index=%u frame=%u "
+                    "timestamp=%lld.%06lld flags=0x%x reserved=0x%x "
+                    "field=%u memory=%u length=%u queued_after=%d "
+                    "buf_type=%d frame_len=%zu ref=%u in_kernel=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    vb.index,
+                    vb.sequence,
+                    (long long)vb.timestamp.tv_sec,
+                    (long long)vb.timestamp.tv_usec,
+                    vb.flags,
+                    vb.reserved,
+                    vb.field,
+                    vb.memory,
+                    vb.length,
+                    my_obj->queued_buffer_count,
+                    buf_info->buf->buf_type,
+                    buf_info->buf->frame_len,
+                    idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                            my_obj->buf_status[idx].buf_refcnt : 0,
+                    idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                            my_obj->buf_status[idx].in_kernel : 0);
+        }
 
         if(buf_info->buf->buf_type == CAM_STREAM_BUF_TYPE_USERPTR) {
             mm_stream_read_user_buf(my_obj, buf_info);
@@ -1671,8 +2011,33 @@ int32_t mm_stream_do_action(mm_stream_t *my_obj,
     if (in_value != NULL) {
         mm_camera_obj_t *cam_obj = my_obj->ch_obj->cam_obj;
         int stream_id = my_obj->server_stream_id;
+        if (my_obj->stream_info != NULL) {
+            ALOGE("NX549J camera streamdiag: do_action begin session=%d "
+                    "stream_id=%d type=%d fmt=%d dim=%dx%d state=%d "
+                    "queued=%d pp=0x%llx",
+                    cam_obj->sessionid,
+                    stream_id,
+                    my_obj->stream_info->stream_type,
+                    my_obj->stream_info->fmt,
+                    my_obj->stream_info->dim.width,
+                    my_obj->stream_info->dim.height,
+                    my_obj->state,
+                    my_obj->queued_buffer_count,
+                    my_obj->stream_info->pp_config.feature_mask);
+        } else {
+            ALOGE("NX549J camera streamdiag: do_action begin session=%d "
+                    "stream_id=%d state=%d no stream_info",
+                    cam_obj->sessionid,
+                    stream_id,
+                    my_obj->state);
+        }
         rc = mm_camera_util_s_ctrl(cam_obj, stream_id, my_obj->fd,
               CAM_PRIV_STREAM_PARM, &value);
+        ALOGE("NX549J camera streamdiag: do_action done session=%d "
+                "stream_id=%d rc=%d",
+                cam_obj->sessionid,
+                stream_id,
+                rc);
     }
     return rc;
 }
@@ -1761,6 +2126,36 @@ int32_t mm_stream_qbuf(mm_stream_t *my_obj, mm_camera_buf_def_t *buf)
     } else {
         memcpy(planes, buf->planes_buf.planes, sizeof(planes));
         length = buf->planes_buf.num_planes;
+    }
+
+    if (length == 0 && buf->fd >= 0 && my_obj->frame_offset.frame_len > 0) {
+        memset(&planes, 0, sizeof(planes));
+        planes[0].length = my_obj->frame_offset.frame_len;
+        planes[0].m.userptr = buf->fd;
+        length = 1;
+        LOGE("NX549J camera streamdiag: qbuf zero-plane fallback "
+             "stream_hdl=0x%x server_id=%d type=%d idx=%d fd=%d len=%u "
+             "frame_len=%u",
+             my_obj->my_hdl, my_obj->server_stream_id,
+             my_obj->stream_info ? my_obj->stream_info->stream_type : -1,
+             buf->buf_idx, buf->fd, planes[0].length,
+             my_obj->frame_offset.frame_len);
+    }
+
+    if (my_obj->stream_info &&
+            (my_obj->stream_info->stream_type == CAM_STREAM_TYPE_SNAPSHOT ||
+             length == 0)) {
+        LOGE("NX549J camera streamdiag: qbuf detail stream_hdl=0x%x "
+             "server_id=%d type=%d idx=%d buf_type=%d length=%u fd=%d "
+             "plane0_userptr=%lu plane0_len=%u plane0_off=%u "
+             "plane1_userptr=%lu plane1_len=%u plane1_off=%u "
+             "frame_len=%u planes_buf_num=%u",
+             my_obj->my_hdl, my_obj->server_stream_id,
+             my_obj->stream_info->stream_type, buf->buf_idx, buf->buf_type,
+             length, buf->fd, planes[0].m.userptr, planes[0].length,
+             planes[0].data_offset, planes[1].m.userptr, planes[1].length,
+             planes[1].data_offset, my_obj->frame_offset.frame_len,
+             buf->planes_buf.num_planes);
     }
 
     memset(&buffer, 0, sizeof(buffer));
@@ -1948,8 +2343,12 @@ int32_t mm_stream_map_buf(mm_stream_t * my_obj,
     packet.payload.buf_map.frame_idx = frame_idx;
     packet.payload.buf_map.plane_idx = plane_idx;
     packet.payload.buf_map.buffer = buffer;
-    LOGD("mapping buf_type %d, stream_id %d, frame_idx %d, fd %d, size %d",
-             buf_type, my_obj->server_stream_id, frame_idx, fd, size);
+    ALOGE("NX549J camera mapdiag: send stream map session=%u stream_id=%d "
+            "type=%u frame=%u plane=%d fd=%d size=%zu buffer=%p "
+            "entry_size=%zu packet_size=%zu",
+            my_obj->ch_obj->cam_obj->sessionid,
+            my_obj->server_stream_id, buf_type, frame_idx, plane_idx, fd,
+            size, buffer, sizeof(cam_buf_map_type), sizeof(cam_sock_packet_t));
 
 #ifdef DAEMON_PRESENT
     rc = mm_camera_util_sendmsg(my_obj->ch_obj->cam_obj,
@@ -2024,6 +2423,20 @@ int32_t mm_stream_map_bufs(mm_stream_t * my_obj,
     for (i = 0; i < numbufs; i++) {
         packet.payload.buf_map_list.buf_maps[i].stream_id = my_obj->server_stream_id;
         sendfds[i] = packet.payload.buf_map_list.buf_maps[i].fd;
+        ALOGE("NX549J camera mapdiag: send stream map_bufs session=%u "
+                "stream_id=%d item=%u/%u type=%u frame=%u plane=%d "
+                "cookie=%u fd=%d size=%zu buffer=%p entry_size=%zu "
+                "packet_size=%zu",
+                my_obj->ch_obj->cam_obj->sessionid,
+                my_obj->server_stream_id, i, numbufs,
+                packet.payload.buf_map_list.buf_maps[i].type,
+                packet.payload.buf_map_list.buf_maps[i].frame_idx,
+                packet.payload.buf_map_list.buf_maps[i].plane_idx,
+                packet.payload.buf_map_list.buf_maps[i].cookie,
+                packet.payload.buf_map_list.buf_maps[i].fd,
+                packet.payload.buf_map_list.buf_maps[i].size,
+                packet.payload.buf_map_list.buf_maps[i].buffer,
+                sizeof(cam_buf_map_type), sizeof(cam_sock_packet_t));
     }
 
     for (i = numbufs; i < CAM_MAX_NUM_BUFS_PER_STREAM; i++) {
@@ -2269,6 +2682,21 @@ int32_t mm_stream_reg_buf(mm_stream_t * my_obj)
 
     my_obj->queued_buffer_count = 0;
     for(i = 0; i < my_obj->buf_num; i++){
+        LOGE("NX549J camera streamdiag: reg_buf flag stream_id=%d type=%d "
+                "mode=%d burst=%u idx=%u initial=%d map_status=%d "
+                "ref=%d in_kernel=%d",
+                my_obj->server_stream_id,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->stream_type : -1,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->streaming_mode : -1,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->num_of_burst : 0,
+                i,
+                my_obj->buf_status[i].initial_reg_flag,
+                my_obj->buf_status[i].map_status,
+                my_obj->buf_status[i].buf_refcnt,
+                my_obj->buf_status[i].in_kernel);
         /* check if need to qbuf initially */
         if (my_obj->buf_status[i].initial_reg_flag) {
             rc = mm_stream_qbuf(my_obj, &my_obj->buf[i]);
@@ -2284,6 +2712,21 @@ int32_t mm_stream_reg_buf(mm_stream_t * my_obj)
             my_obj->buf_status[i].buf_refcnt = 1;
             my_obj->buf_status[i].in_kernel = 0;
         }
+        LOGE("NX549J camera streamdiag: reg_buf done stream_id=%d type=%d "
+                "mode=%d burst=%u idx=%u rc=%d queued=%d ref=%d "
+                "in_kernel=%d",
+                my_obj->server_stream_id,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->stream_type : -1,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->streaming_mode : -1,
+                my_obj->stream_info != NULL ?
+                        my_obj->stream_info->num_of_burst : 0,
+                i,
+                rc,
+                my_obj->queued_buffer_count,
+                my_obj->buf_status[i].buf_refcnt,
+                my_obj->buf_status[i].in_kernel);
     }
 
     return rc;
@@ -4589,14 +5032,62 @@ int32_t mm_stream_sync_info(mm_stream_t *my_obj)
 {
     int32_t rc = 0;
     int32_t value = 0;
+    uint32_t i;
     my_obj->stream_info->stream_svr_id = my_obj->server_stream_id;
     rc = mm_stream_calc_offset(my_obj);
 
     if (rc == 0) {
+        LOGE("NX549J camera streamdiag: sync stream_id=%d svr=%u type=%d "
+                "fmt=%d dim=%dx%d planes=%d frame_len=%d num_bufs=%d "
+                "mode=%d burst=%u is=%d secure=%d perf=%d dis=%u "
+                "no_frame=%u pp=0x%llx",
+                my_obj->server_stream_id,
+                my_obj->stream_info->stream_svr_id,
+                my_obj->stream_info->stream_type,
+                my_obj->stream_info->fmt,
+                my_obj->stream_info->dim.width,
+                my_obj->stream_info->dim.height,
+                my_obj->stream_info->buf_planes.plane_info.num_planes,
+                my_obj->stream_info->buf_planes.plane_info.frame_len,
+                my_obj->stream_info->num_bufs,
+                my_obj->stream_info->streaming_mode,
+                my_obj->stream_info->num_of_burst,
+                my_obj->stream_info->is_type,
+                my_obj->stream_info->is_secure,
+                my_obj->stream_info->perf_mode,
+                my_obj->stream_info->dis_enable,
+                my_obj->stream_info->noFrameExpected,
+                my_obj->stream_info->pp_config.feature_mask);
+        for (i = 0;
+                i < my_obj->stream_info->buf_planes.plane_info.num_planes &&
+                i < VIDEO_MAX_PLANES;
+                i++) {
+            ALOGE("NX549J camera streamdiag: sync plane stream_id=%d "
+                    "plane=%u len=%u stride=%d scanline=%d wxh=%dx%d "
+                    "offset=%u meta_len=%u meta_stride=%d meta_scanline=%d",
+                    my_obj->server_stream_id,
+                    i,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].len,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].stride,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].scanline,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].width,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].height,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].offset,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].meta_len,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].meta_stride,
+                    my_obj->stream_info->buf_planes.plane_info.mp[i].meta_scanline);
+        }
         mm_camera_obj_t *cam_obj = my_obj->ch_obj->cam_obj;
         int stream_id  =  my_obj->server_stream_id;
         rc = mm_camera_util_s_ctrl(cam_obj, stream_id, my_obj->fd,
                 CAM_PRIV_STREAM_INFO_SYNC, &value);
+        LOGE("NX549J camera streamdiag: sync s_ctrl done stream_id=%d "
+                "ctrl=0x%x rc=%d value=%d errno=%d",
+                stream_id,
+                CAM_PRIV_STREAM_INFO_SYNC,
+                rc,
+                value,
+                rc < 0 ? errno : 0);
     }
     return rc;
 }
@@ -4650,6 +5141,22 @@ int32_t mm_stream_set_fmt(mm_stream_t *my_obj)
         msm_fmt.plane_sizes[0] = my_obj->stream_info->user_buf_info.size;
     }
 
+    LOGE("NX549J camera streamdiag: set_fmt stream_id=%d type=%d "
+            "mode=%d burst=%u fmt=%d v4l2=0x%x dim=%ux%u planes=%u "
+            "sizes=%u,%u,%u,%u",
+            my_obj->server_stream_id,
+            my_obj->stream_info->stream_type,
+            my_obj->stream_info->streaming_mode,
+            my_obj->stream_info->num_of_burst,
+            my_obj->stream_info->fmt,
+            msm_fmt.pixelformat,
+            msm_fmt.width,
+            msm_fmt.height,
+            msm_fmt.num_planes,
+            msm_fmt.plane_sizes[0],
+            msm_fmt.plane_sizes[1],
+            msm_fmt.plane_sizes[2],
+            msm_fmt.plane_sizes[3]);
     memcpy(fmt.fmt.raw_data, &msm_fmt, sizeof(msm_fmt));
     rc = ioctl(my_obj->fd, VIDIOC_S_FMT, &fmt);
     if (rc < 0) {

@@ -244,7 +244,13 @@ int32_t QCameraPostProcessor::start(QCameraChannel *pSrcChannel)
         return UNKNOWN_ERROR;
     }
 
-    if ( m_parent->needReprocess() ) {
+    bool needsReprocess = m_parent->needReprocess();
+    LOGE("NX549J bringup: postproc start src=0x%x need_reprocess=%d pp_count=%d",
+            pInputChannel->getMyHandle(),
+            needsReprocess,
+            mPPChannelCount);
+
+    if (needsReprocess) {
         for (int8_t i = 0; i < mPPChannelCount; i++) {
             // Delete previous reproc channel
             QCameraReprocessChannel *pChannel = mPPChannels[i];
@@ -359,6 +365,8 @@ int32_t QCameraPostProcessor::stop()
 int32_t QCameraPostProcessor::createJpegSession(QCameraChannel *pSrcChannel)
 {
     int32_t rc = NO_ERROR;
+    bool needsReprocess = false;
+    bool useReprocessChannel = false;
 
     LOGH("E ");
     if (m_bInited == FALSE) {
@@ -371,11 +379,19 @@ int32_t QCameraPostProcessor::createJpegSession(QCameraChannel *pSrcChannel)
         return UNKNOWN_ERROR;
     }
 
-    if (mPPChannelCount > 0) {
-        QCameraChannel *pChannel = NULL;
-        int ppChannel_idx = mPPChannelCount - 1;
-        pChannel = m_parent->needReprocess() ? mPPChannels[ppChannel_idx] :
-                pSrcChannel;
+    QCameraChannel *pChannel = NULL;
+    int ppChannel_idx = mPPChannelCount - 1;
+    needsReprocess = m_parent->needReprocess();
+    useReprocessChannel = needsReprocess && (mPPChannelCount > 0);
+    pChannel = useReprocessChannel ? mPPChannels[ppChannel_idx] : pSrcChannel;
+    LOGE("NX549J bringup: createJpegSession begin src=0x%x channel=0x%x "
+            "need_reprocess=%d use_reprocess=%d pp_count=%d",
+            pSrcChannel->getMyHandle(),
+            pChannel != NULL ? pChannel->getMyHandle() : 0,
+            needsReprocess,
+            useReprocessChannel,
+            mPPChannelCount);
+    {
         QCameraStream *pSnapshotStream = NULL;
         QCameraStream *pThumbStream = NULL;
         bool thumb_stream_needed = ((!m_parent->isZSLMode() ||
@@ -413,7 +429,7 @@ int32_t QCameraPostProcessor::createJpegSession(QCameraChannel *pSrcChannel)
         // If thumbnail is not part of the reprocess channel, then
         // try to get it from the source channel
         if ((thumb_stream_needed) && (NULL == pThumbStream) &&
-                (pChannel == mPPChannels[ppChannel_idx])) {
+                useReprocessChannel) {
             for (uint32_t i = 0; i < pSrcChannel->getNumOfStreams(); ++i) {
                 QCameraStream *pStream = pSrcChannel->getStreamByIndex(i);
 
@@ -438,7 +454,10 @@ int32_t QCameraPostProcessor::createJpegSession(QCameraChannel *pSrcChannel)
                 LOGE("error getting encoding config");
                 return rc;
             }
-            LOGH("[KPI Perf] : call jpeg create_session");
+            LOGE("NX549J bringup: createJpegSession call jpeg create_session "
+                    "snapshot_hdl=0x%x thumb_hdl=0x%x",
+                    pSnapshotStream->getMyHandle(),
+                    pThumbStream != NULL ? pThumbStream->getMyHandle() : 0);
 
             rc = mJpegHandle.create_session(mJpegClientHandle,
                     &encodeParam,
@@ -447,7 +466,13 @@ int32_t QCameraPostProcessor::createJpegSession(QCameraChannel *pSrcChannel)
                 LOGE("error creating a new jpeg encoding session");
                 return rc;
             }
+            LOGE("NX549J bringup: createJpegSession done id=%u", mJpegSessionId);
             mNewJpegSessionNeeded = false;
+        } else {
+            LOGE("NX549J bringup: createJpegSession no snapshot stream found "
+                    "channel=0x%x streams=%u",
+                    pChannel != NULL ? pChannel->getMyHandle() : 0,
+                    pChannel != NULL ? pChannel->getNumOfStreams() : 0);
         }
     }
     LOGH("X ");
@@ -927,6 +952,32 @@ int32_t QCameraPostProcessor::processData(mm_camera_super_buf_t *frame)
         return UNKNOWN_ERROR;
     }
 
+    bool needsReprocess = m_parent->needReprocess();
+    LOGE("NX549J bringup: processData begin frame=%p ch=0x%x num_bufs=%u "
+            "need_reprocess=%d pp_count=%d inputJpegQ=%d inputPPQ=%d",
+            frame,
+            frame->ch_id,
+            frame->num_bufs,
+            needsReprocess,
+            mPPChannelCount,
+            m_inputJpegQ.getCurrentSize(),
+            m_inputPPQ.getCurrentSize());
+    for (uint32_t i = 0; i < frame->num_bufs; i++) {
+        if (frame->bufs[i] == NULL) {
+            LOGE("NX549J bringup: processData buf[%u] null", i);
+            continue;
+        }
+        LOGE("NX549J bringup: processData buf[%u] stream_id=%u type=%d "
+                "idx=%u frame=%u fd=%d len=%u",
+                i,
+                frame->bufs[i]->stream_id,
+                frame->bufs[i]->stream_type,
+                frame->bufs[i]->buf_idx,
+                frame->bufs[i]->frame_idx,
+                frame->bufs[i]->fd,
+                frame->bufs[i]->frame_len);
+    }
+
     mm_camera_buf_def_t *meta_frame = NULL;
     for (uint32_t i = 0; i < frame->num_bufs; i++) {
         // look through input superbuf
@@ -940,7 +991,7 @@ int32_t QCameraPostProcessor::processData(mm_camera_super_buf_t *frame)
         m_parent->updateMetadata((metadata_buffer_t *)meta_frame->buffer);
     }
 
-    if (m_parent->needReprocess()) {
+    if (needsReprocess) {
         if ((!m_parent->isLongshotEnabled() &&
              !m_parent->m_stateMachine.isNonZSLCaptureRunning()) ||
             (m_parent->isLongshotEnabled() &&
@@ -1009,6 +1060,8 @@ int32_t QCameraPostProcessor::processData(mm_camera_super_buf_t *frame)
                 && (meta_frame != NULL)) {
             m_InputMetadata.add(meta_frame);
         }
+        LOGE("NX549J bringup: processData queued pp job inputPPQ=%d",
+                m_inputPPQ.getCurrentSize());
     } else if (m_parent->mParameters.isNV16PictureFormat() ||
         m_parent->mParameters.isNV21PictureFormat()) {
         //check if raw frame information is needed.
@@ -1046,9 +1099,12 @@ int32_t QCameraPostProcessor::processData(mm_camera_super_buf_t *frame)
             jpeg_job = NULL;
             return NO_ERROR;
         }
+        LOGE("NX549J bringup: processData queued jpeg job inputJpegQ=%d",
+                m_inputJpegQ.getCurrentSize());
     }
 
     m_dataProcTh.sendCmd(CAMERA_CMD_TYPE_DO_NEXT_JOB, FALSE, FALSE);
+    LOGE("NX549J bringup: processData sent DO_NEXT_JOB");
     return NO_ERROR;
 }
 
@@ -1111,6 +1167,11 @@ int32_t QCameraPostProcessor::processJpegEvt(qcamera_jpeg_evt_payload_t *evt)
     camera_memory_t *jpeg_mem = NULL;
     omx_jpeg_ouput_buf_t *jpeg_out = NULL;
     void *jpegData = NULL;
+    LOGE("NX549J bringup: processJpegEvt begin evt=%p status=%d job=%u size=%u",
+            evt,
+            evt != NULL ? evt->status : -1,
+            evt != NULL ? evt->jobId : 0,
+            evt != NULL ? evt->out_data.buf_filled_len : 0);
     if (mUseSaveProc && m_parent->isLongshotEnabled()) {
         qcamera_jpeg_evt_payload_t *saveData = ( qcamera_jpeg_evt_payload_t * ) malloc(sizeof(qcamera_jpeg_evt_payload_t));
         if ( NULL == saveData ) {
@@ -2125,7 +2186,10 @@ int32_t QCameraPostProcessor::syncStreamParams(mm_camera_super_buf_t *frame,
 int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
                                          uint8_t &needNewSess)
 {
-    LOGD("E");
+    LOGE("NX549J bringup: encodeData begin job_data=%p needNewSess=%u session=%u",
+            jpeg_job_data,
+            needNewSess,
+            mJpegSessionId);
     int32_t ret = NO_ERROR;
     mm_jpeg_job_t jpg_job;
     uint32_t jobId = 0;
@@ -2168,11 +2232,12 @@ int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
             recvd_frame,
             jpeg_job_data->src_reproc_frame);
     if (NO_ERROR != ret) {
+        LOGE("NX549J bringup: encodeData queryStreams fail ret=%d", ret);
         return ret;
     }
 
     if(NULL == main_frame){
-       LOGE("Main frame is NULL");
+       LOGE("NX549J bringup: encodeData main frame is NULL");
        return BAD_VALUE;
     }
 
@@ -2233,6 +2298,7 @@ int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
             LOGE("error creating a new jpeg encoding session");
             return ret;
         }
+        LOGE("NX549J bringup: encodeData create_session done id=%u", mJpegSessionId);
         needNewSess = FALSE;
     }
     // Fill in new job
@@ -2506,13 +2572,6 @@ int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
                     jpg_job.encode_job.cam_exif_params.debug_params->asd_debug_params_valid;
             jpg_job.encode_job.p_metadata->is_statsdebug_stats_params_valid =
                     jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_bestats_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_bhist_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_3a_tuning_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params_valid;
-
             if (jpg_job.encode_job.cam_exif_params.debug_params->ae_debug_params_valid) {
                 jpg_job.encode_job.p_metadata->statsdebug_ae_data =
                         jpg_job.encode_job.cam_exif_params.debug_params->ae_debug_params;
@@ -2532,18 +2591,6 @@ int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
             if (jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params_valid) {
                 jpg_job.encode_job.p_metadata->statsdebug_stats_buffer_data =
                         jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_bestats_buffer_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_bhist_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_3a_tuning_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params;
             }
         }
 
@@ -2574,6 +2621,11 @@ int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
         jpg_job.encode_job.multi_image_info.num_of_images = 1;
     }
 
+    LOGE("NX549J bringup: encodeData start_job session=%u src=%d thumb=%d dst=%d",
+            jpg_job.encode_job.session_id,
+            jpg_job.encode_job.src_index,
+            jpg_job.encode_job.thumb_index,
+            jpg_job.encode_job.dst_index);
     LOGI("[KPI Perf] : PROFILE_JPEG_JOB_START");
     ret = mJpegHandle.start_job(&jpg_job, &jobId);
     if (jpg_job.encode_job.cam_exif_params.debug_params) {
@@ -2583,6 +2635,7 @@ int32_t QCameraPostProcessor::encodeData(qcamera_jpeg_data_t *jpeg_job_data,
         // remember job info
         jpeg_job_data->jobId = jobId;
     }
+    LOGE("NX549J bringup: encodeData start_job rc=%d jobId=%u", ret, jobId);
 
     return ret;
 }
@@ -2944,7 +2997,16 @@ void *QCameraPostProcessor::dataProcessRoutine(void *data)
 
                 // destroy jpeg encoding session
                 if ( 0 < pme->mJpegSessionId ) {
-                    pme->mJpegHandle.destroy_session(pme->mJpegSessionId);
+                    char prop[PROPERTY_VALUE_MAX];
+                    property_get("persist.camera.nx549j.skip_jpeg_destroy_on_stop",
+                            prop, "1");
+                    if (atoi(prop)) {
+                        LOGW("NX549J bringup: skip jpeg destroy_session on "
+                                "stop id=%u to avoid OMX codec cleanup abort",
+                                pme->mJpegSessionId);
+                    } else {
+                        pme->mJpegHandle.destroy_session(pme->mJpegSessionId);
+                    }
                     pme->mJpegSessionId = 0;
                 }
 
@@ -2983,6 +3045,11 @@ void *QCameraPostProcessor::dataProcessRoutine(void *data)
                         (qcamera_jpeg_data_t *)pme->m_inputJpegQ.dequeue();
 
                     if (NULL != jpeg_job) {
+                        LOGE("NX549J bringup: dataProc dequeued jpeg job=%p "
+                                "inputJpegQ=%d ongoingJpegQ=%d",
+                                jpeg_job,
+                                pme->m_inputJpegQ.getCurrentSize(),
+                                pme->m_ongoingJpegQ.getCurrentSize());
                         // To avoid any race conditions,
                         // sync any stream specific parameters here.
                         if (pme->m_parent->mParameters.isAdvCamFeaturesEnabled()) {
@@ -2995,6 +3062,7 @@ void *QCameraPostProcessor::dataProcessRoutine(void *data)
                         if (pme->m_ongoingJpegQ.enqueue((void *)jpeg_job)) {
                             ret = pme->encodeData(jpeg_job,
                                       pme->mNewJpegSessionNeeded);
+                            LOGE("NX549J bringup: dataProc encodeData rc=%d", ret);
                             if (NO_ERROR != ret) {
                                 // dequeue the last one
                                 pme->m_ongoingJpegQ.dequeue(false);

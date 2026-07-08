@@ -37,16 +37,28 @@ PRODUCT_PACKAGES += \
     libmm-qcamera
 
 # Fingerprint
-# NX549J attempt516 ISOLATION: the stock Nubia 7.1 Goodix HAL blob crash-loops
-# on LOS 18.1 (SIGSEGV in goodix_sensor_init via set_active_group). Keep the
-# service binary installed for future bring-up, but drop the feature
-# declaration so FingerprintService never lazy-starts it.
-# Rollback: restore the android.hardware.fingerprint.xml copy below.
+# NX549J Fix C4: re-enable the stock Nubia 7.1 Goodix (GF3208) HAL. The blob
+# (libfp_client.so / gx_fpd) is built against the Android 6/9-era libbinder ABI
+# and stack-smashed at goodix_sensor_init+224 against A11's libbinder. We ship
+# A9 (VNDK v28) copies of the ABI-sensitive libs into /vendor/lib64/fp_compat
+# and prepend that dir to LD_LIBRARY_PATH for ONLY fps_hal + gx_fpd (see the
+# service .rc and init.nx549j.rc). Vendor-image-only; does not touch boot.img.
+# Rollback: re-comment the feature xml + fp_compat copies below and re-disable
+# the fps_hal start triggers in init.nx549j.rc.
 PRODUCT_PACKAGES += \
     android.hardware.biometrics.fingerprint@2.1-service.nubia
 
-#PRODUCT_COPY_FILES += \
-#    frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
+PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
+
+# A9/VNDK-v28 ABI-compat libs for the Goodix fp blob (loaded only via the
+# fp_compat LD_LIBRARY_PATH scoping, so the rest of the system is unaffected).
+FP_COMPAT_V28 := prebuilts/vndk/v28/arm64/arch-arm64-armv8-a/shared
+PRODUCT_COPY_FILES += \
+    $(FP_COMPAT_V28)/vndk-core/libbinder.so:$(TARGET_COPY_OUT_VENDOR)/lib64/fp_compat/libbinder.so \
+    $(FP_COMPAT_V28)/vndk-sp/libutils.so:$(TARGET_COPY_OUT_VENDOR)/lib64/fp_compat/libutils.so \
+    $(FP_COMPAT_V28)/vndk-sp/libcutils.so:$(TARGET_COPY_OUT_VENDOR)/lib64/fp_compat/libcutils.so \
+    $(FP_COMPAT_V28)/vndk-sp/libc++.so:$(TARGET_COPY_OUT_VENDOR)/lib64/fp_compat/libc++.so
 
 # NFC
 PRODUCT_PACKAGES += \

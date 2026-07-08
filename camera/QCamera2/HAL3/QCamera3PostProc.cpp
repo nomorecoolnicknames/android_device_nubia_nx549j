@@ -716,11 +716,6 @@ bool QCamera3PostProcessor::needsReprocess(qcamera_fwk_input_pp_data_t *frame)
         noiseRedModeOn = (CAM_NOISE_REDUCTION_MODE_OFF != *noiseRedMode);
     }
 
-    IF_META_AVAILABLE(uint8_t, reprocess_flags,
-            CAM_INTF_META_REPROCESS_FLAGS, meta) {
-        reproNotDone = FALSE;
-    }
-
     return (edgeModeOn || noiseRedModeOn || reproNotDone);
 }
 
@@ -1367,21 +1362,6 @@ int32_t QCamera3PostProcessor::encodeFWKData(qcamera_hal3_jpeg_data_t *jpeg_job_
 
     // Set JPEG encode crop in reprocess frame metadata
     // If this JPEG crop info exist, encoder should do cropping
-    IF_META_AVAILABLE(cam_stream_crop_info_t, jpeg_crop,
-            CAM_INTF_PARM_JPEG_ENCODE_CROP, metadata) {
-        memcpy(&crop, &(jpeg_crop->crop), sizeof(cam_rect_t));
-    }
-
-    // Set JPEG encode crop in reprocess frame metadata
-    // If this JPEG scale info exist, encoder should do scaling
-    IF_META_AVAILABLE(cam_dimension_t, scale_dim,
-            CAM_INTF_PARM_JPEG_SCALE_DIMENSION, metadata) {
-        if (scale_dim->width != 0 && scale_dim->height != 0) {
-            dst_dim.width = scale_dim->width;
-            dst_dim.height = scale_dim->height;
-        }
-    }
-
     needJpegExifRotation = (hal_obj->needJpegExifRotation() || !needsReprocess(recvd_frame));
 
     // If EXIF rotation metadata is added and used to match the JPEG orientation,
@@ -1591,13 +1571,6 @@ int32_t QCamera3PostProcessor::encodeFWKData(qcamera_hal3_jpeg_data_t *jpeg_job_
                     jpg_job.encode_job.cam_exif_params.debug_params->asd_debug_params_valid;
             jpg_job.encode_job.p_metadata->is_statsdebug_stats_params_valid =
                     jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_bestats_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_bhist_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_3a_tuning_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params_valid;
-
             if (jpg_job.encode_job.cam_exif_params.debug_params->ae_debug_params_valid) {
                 jpg_job.encode_job.p_metadata->statsdebug_ae_data =
                         jpg_job.encode_job.cam_exif_params.debug_params->ae_debug_params;
@@ -1617,18 +1590,6 @@ int32_t QCamera3PostProcessor::encodeFWKData(qcamera_hal3_jpeg_data_t *jpeg_job_
             if (jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params_valid) {
                 jpg_job.encode_job.p_metadata->statsdebug_stats_buffer_data =
                         jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_bestats_buffer_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_bhist_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_3a_tuning_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params;
             }
         }
     } else {
@@ -2004,13 +1965,6 @@ int32_t QCamera3PostProcessor::encodeData(qcamera_hal3_jpeg_data_t *jpeg_job_dat
                     jpg_job.encode_job.cam_exif_params.debug_params->asd_debug_params_valid;
             jpg_job.encode_job.p_metadata->is_statsdebug_stats_params_valid =
                     jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_bestats_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_bhist_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params_valid;
-            jpg_job.encode_job.p_metadata->is_statsdebug_3a_tuning_params_valid =
-                    jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params_valid;
-
             if (jpg_job.encode_job.cam_exif_params.debug_params->ae_debug_params_valid) {
                 jpg_job.encode_job.p_metadata->statsdebug_ae_data =
                         jpg_job.encode_job.cam_exif_params.debug_params->ae_debug_params;
@@ -2030,18 +1984,6 @@ int32_t QCamera3PostProcessor::encodeData(qcamera_hal3_jpeg_data_t *jpeg_job_dat
             if (jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params_valid) {
                 jpg_job.encode_job.p_metadata->statsdebug_stats_buffer_data =
                         jpg_job.encode_job.cam_exif_params.debug_params->stats_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_bestats_buffer_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->bestats_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_bhist_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->bhist_debug_params;
-            }
-            if (jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params_valid) {
-                jpg_job.encode_job.p_metadata->statsdebug_3a_tuning_data =
-                        jpg_job.encode_job.cam_exif_params.debug_params->q3a_tuning_debug_params;
             }
         }
     } else {

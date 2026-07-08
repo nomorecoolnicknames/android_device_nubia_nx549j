@@ -30,6 +30,8 @@
 #define LOG_TAG "QCameraChannel"
 
 // System dependencies
+#include <cutils/properties.h>
+#include <stdlib.h>
 #include <utils/Errors.h>
 
 // Camera dependencies
@@ -42,6 +44,14 @@ extern "C" {
 using namespace android;
 
 namespace qcamera {
+
+static bool nx549jChannelPropEnabled(const char *name)
+{
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get(name, value, "0");
+    return atoi(value) > 0;
+}
 
 /*===========================================================================
  * FUNCTION   : QCameraChannel
@@ -213,6 +223,28 @@ int32_t QCameraChannel::addStream(QCameraAllocator &allocator,
         bool bDeffAlloc, cam_rotation_t online_rotation)
 {
     int32_t rc = NO_ERROR;
+    cam_stream_info_t *streamInfo = streamInfoBuf != NULL ?
+            (cam_stream_info_t *)streamInfoBuf->getPtr(0) : NULL;
+
+    LOGE("NX549J bringup: QCameraChannel addStream begin ch=0x%x "
+            "existing_streams=%zu type=%d fmt=%d dim=%dx%d num_bufs=%d "
+            "mode=%d burst=%u pp=0x%llx min_bufs=%u dyn=%d defer=%d "
+            "rotation=%d",
+            m_handle,
+            mStreams.size(),
+            streamInfo != NULL ? streamInfo->stream_type : -1,
+            streamInfo != NULL ? streamInfo->fmt : -1,
+            streamInfo != NULL ? streamInfo->dim.width : -1,
+            streamInfo != NULL ? streamInfo->dim.height : -1,
+            streamInfo != NULL ? streamInfo->num_bufs : -1,
+            streamInfo != NULL ? streamInfo->streaming_mode : -1,
+            streamInfo != NULL ? streamInfo->num_of_burst : 0,
+            streamInfo != NULL ? streamInfo->pp_config.feature_mask : 0,
+            minStreamBufNum,
+            bDynAllocBuf,
+            bDeffAlloc,
+            online_rotation);
+
     if (mStreams.size() >= MAX_STREAM_NUM_IN_BUNDLE) {
         LOGE("stream number (%zu) exceeds max limit (%d)",
                mStreams.size(), MAX_STREAM_NUM_IN_BUNDLE);
@@ -241,7 +273,20 @@ int32_t QCameraChannel::addStream(QCameraAllocator &allocator,
     if (rc == 0) {
         Mutex::Autolock lock(mStreamLock);
         mStreams.add(pStream);
+        LOGE("NX549J bringup: QCameraChannel addStream done ch=0x%x "
+                "stream_hdl=0x%x server_id=%u type=%d orig_type=%d total=%zu",
+                m_handle,
+                pStream->getMyHandle(),
+                pStream->getMyServerID(),
+                pStream->getMyType(),
+                pStream->getMyOriginalType(),
+                mStreams.size());
     } else {
+        LOGE("NX549J bringup: QCameraChannel addStream failed ch=0x%x "
+                "type=%d rc=%d",
+                m_handle,
+                streamInfo != NULL ? streamInfo->stream_type : -1,
+                rc);
         delete pStream;
     }
     return rc;
@@ -302,6 +347,23 @@ int32_t QCameraChannel::start()
         LOGW("Attempt to start active channel");
         return rc;
     }
+    LOGE("NX549J bringup: QCameraChannel start begin ch=0x%x streams=%zu active=%d",
+            m_handle, mStreams.size(), m_bIsActive);
+    for (size_t i = 0; i < mStreams.size(); i++) {
+        if (mStreams[i] != NULL) {
+            LOGE("NX549J bringup: QCameraChannel start stream[%zu] "
+                    "hdl=0x%x server_id=%u type=%d orig=%d channel=0x%x "
+                    "bufs=%u queued=%d",
+                    i,
+                    mStreams[i]->getMyHandle(),
+                    mStreams[i]->getMyServerID(),
+                    mStreams[i]->getMyType(),
+                    mStreams[i]->getMyOriginalType(),
+                    mStreams[i]->getChannelHandle(),
+                    mStreams[i]->getBufferCount(),
+                    mStreams[i]->getNumQueuedBuf());
+        }
+    }
     if (mStreams.size() > 1) {
         // there is more than one stream in the channel
         // we need to notify mctl that all streams in this channel need to be bundled
@@ -312,7 +374,27 @@ int32_t QCameraChannel::start()
             LOGE("get_bundle_info failed");
             return rc;
         }
-        if (bundleInfo.num_of_streams > 1) {
+        LOGE("NX549J bringup: QCameraChannel bundle ch=0x%x num_streams=%d "
+                "ids=%u,%u,%u,%u",
+                m_handle,
+                bundleInfo.num_of_streams,
+                bundleInfo.stream_ids[0],
+                bundleInfo.stream_ids[1],
+                bundleInfo.stream_ids[2],
+                bundleInfo.stream_ids[3]);
+        if (bundleInfo.num_of_streams > 1 &&
+                nx549jChannelPropEnabled(
+                    "persist.camera.nx549j.skip_bundle_setparam")) {
+            LOGE("NX549J bringup: skip SET_BUNDLE_INFO ch=0x%x "
+                    "num_streams=%d ids=%u,%u,%u,%u by "
+                    "persist.camera.nx549j.skip_bundle_setparam=1",
+                    m_handle,
+                    bundleInfo.num_of_streams,
+                    bundleInfo.stream_ids[0],
+                    bundleInfo.stream_ids[1],
+                    bundleInfo.stream_ids[2],
+                    bundleInfo.stream_ids[3]);
+        } else if (bundleInfo.num_of_streams > 1) {
             for (int i = 0; i < bundleInfo.num_of_streams; i++) {
                 QCameraStream *pStream = getStreamByServerID(bundleInfo.stream_ids[i]);
                 if (pStream != NULL) {
@@ -332,6 +414,17 @@ int32_t QCameraChannel::start()
                         LOGE("stream setParameter for set bundle failed");
                         return rc;
                     }
+                    LOGE("NX549J bringup: QCameraChannel set bundle done "
+                            "ch=0x%x stream_id=%u type=%d num_streams=%d "
+                            "ids=%u,%u,%u,%u",
+                            m_handle,
+                            pStream->getMyServerID(),
+                            pStream->getMyType(),
+                            bundleInfo.num_of_streams,
+                            bundleInfo.stream_ids[0],
+                            bundleInfo.stream_ids[1],
+                            bundleInfo.stream_ids[2],
+                            bundleInfo.stream_ids[3]);
                 }
             }
         }
@@ -343,7 +436,10 @@ int32_t QCameraChannel::start()
             mStreams[i]->start();
         }
     }
+    LOGE("NX549J bringup: QCameraChannel start_channel call ch=0x%x", m_handle);
     rc = m_camOps->start_channel(m_camHandle, m_handle);
+    LOGE("NX549J bringup: QCameraChannel start_channel done ch=0x%x rc=%d",
+            m_handle, rc);
 
     if (rc != NO_ERROR) {
         for (size_t i = 0; i < mStreams.size(); i++) {
@@ -704,7 +800,16 @@ QCameraPicChannel::~QCameraPicChannel()
  *==========================================================================*/
 int32_t QCameraPicChannel::takePicture (mm_camera_req_buf_t *buf)
 {
+    LOGE("NX549J bringup: QCameraPicChannel request_super_buf ch=0x%x "
+            "type=%d num=%d retro=%d primary=%d",
+            m_handle,
+            buf != NULL ? buf->type : -1,
+            buf != NULL ? buf->num_buf_requested : -1,
+            buf != NULL ? buf->num_retro_buf_requested : -1,
+            buf != NULL ? buf->primary_only : -1);
     int32_t rc = m_camOps->request_super_buf(m_camHandle, m_handle, buf);
+    LOGE("NX549J bringup: QCameraPicChannel request_super_buf done "
+            "ch=0x%x rc=%d", m_handle, rc);
     return rc;
 }
 
@@ -721,7 +826,11 @@ int32_t QCameraPicChannel::takePicture (mm_camera_req_buf_t *buf)
  *==========================================================================*/
 int32_t QCameraPicChannel::cancelPicture()
 {
+    LOGE("NX549J bringup: QCameraPicChannel cancel_super_buf ch=0x%x",
+            m_handle);
     int32_t rc = m_camOps->cancel_super_buf_request(m_camHandle, m_handle);
+    LOGE("NX549J bringup: QCameraPicChannel cancel_super_buf done "
+            "ch=0x%x rc=%d", m_handle, rc);
     return rc;
 }
 
@@ -979,6 +1088,14 @@ int32_t QCameraReprocessChannel::addReprocStreamsFromSource(
     memset(mSrcStreamHandles, 0, sizeof(mSrcStreamHandles));
     if (NULL == paddingInfo) {
         return BAD_VALUE;
+    }
+    if (nx549jChannelPropEnabled("persist.camera.force_bringup_no_pp")) {
+        LOGE("NX549J bringup: skip reprocess streams by "
+                "persist.camera.force_bringup_no_pp=1 src_streams=%d "
+                "offline=%d cont=%d feature=0x%llx",
+                pSrcChannel != NULL ? pSrcChannel->getNumOfStreams() : -1,
+                offline, contStream, featureConfig.feature_mask);
+        return NO_ERROR;
     }
     padding = *paddingInfo;
     //Use maximum padding so that the buffer
@@ -1390,7 +1507,6 @@ int32_t QCameraReprocessChannel::doReprocessOffline(mm_camera_buf_def_t *frame,
     param.type = CAM_STREAM_PARAM_TYPE_DO_REPROCESS;
     param.reprocess.buf_index = buf_index;
     param.reprocess.frame_idx = frame->frame_idx;
-    param.reprocess.is_uv_subsampled = frame->is_uv_subsampled;
     cam_stream_info_t *streamInfo =
             reinterpret_cast<cam_stream_info_t *>(pStream->getStreamInfoBuf()->getPtr(0));
 
@@ -1398,8 +1514,6 @@ int32_t QCameraReprocessChannel::doReprocessOffline(mm_camera_buf_def_t *frame,
              (streamInfo->reprocess_config.pp_feature_config.feature_mask &
              CAM_QCOM_FEATURE_METADATA_BYPASS)) {
         LOGH("set meta bypass for quadra cfa first pass");
-        // Backend will skip processing of metadata for first pass
-        param.reprocess.is_offline_meta_bypass = 1;
     }
     if (meta_buf != NULL) {
         param.reprocess.meta_present = 1;
@@ -1574,7 +1688,6 @@ int32_t QCameraReprocessChannel::doReprocess(mm_camera_super_buf_t *frame,
             param.type = CAM_STREAM_PARAM_TYPE_DO_REPROCESS;
             param.reprocess.buf_index = frame->bufs[i]->buf_idx;
             param.reprocess.frame_idx = frame->bufs[i]->frame_idx;
-            param.reprocess.is_uv_subsampled = frame->bufs[i]->is_uv_subsampled;
             if (pMetaStream != NULL) {
                 // we have meta data frame bundled, sent together with reprocess frame
                 param.reprocess.meta_present = 1;

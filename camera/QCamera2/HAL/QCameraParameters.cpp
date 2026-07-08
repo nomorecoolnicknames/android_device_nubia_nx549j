@@ -36,6 +36,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <utils/Errors.h>
 #define SYSINFO_H <SYSTEM_HEADER_PREFIX/sysinfo.h>
 #include SYSINFO_H
@@ -59,6 +60,310 @@ extern "C" {
 #define FOCUS_PERCISION 0.0000001
 
 namespace qcamera {
+
+static const cam_dimension_t NX549J_FALLBACK_STREAM_SIZE = {640, 480};
+static const cam_dimension_t NX549J_BRINGUP_PREVIEW_SIZES[] = {
+    {1920, 1080},
+    {1280, 720},
+    {640, 480},
+};
+
+static bool isSaneCameraSize(const cam_dimension_t &size)
+{
+    return size.width >= 160 && size.height >= 120 &&
+            size.width <= 8192 && size.height <= 8192;
+}
+
+static bool isSaneCameraSizeTable(const cam_dimension_t *sizes,
+        size_t len, size_t maxLen)
+{
+    if (sizes == NULL || len == 0 || len > maxLen) {
+        return false;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        if (!isSaneCameraSize(sizes[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static cam_dimension_t pickSaneCameraSize(const cam_dimension_t *sizes,
+        size_t len, size_t maxLen, cam_dimension_t fallback)
+{
+    if (sizes != NULL && len > 0 && len <= maxLen) {
+        for (size_t i = 0; i < len; i++) {
+            if (isSaneCameraSize(sizes[i])) {
+                return sizes[i];
+            }
+        }
+    }
+    return fallback;
+}
+
+static bool isSizeInTable(const cam_dimension_t &size,
+        const cam_dimension_t *sizes, size_t len)
+{
+    if (sizes == NULL) {
+        return false;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        if (size.width == sizes[i].width && size.height == sizes[i].height) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool isBringupSafePreviewSize(const cam_dimension_t &size)
+{
+    return isSaneCameraSize(size) &&
+            size.width <= 1920 && size.height <= 1080;
+}
+
+static bool forceBringupPreviewSizes()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_preview", prop, "1");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupNoPp()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_no_pp", prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupNoPpStreamType(cam_stream_type_t stream_type)
+{
+    switch (stream_type) {
+    case CAM_STREAM_TYPE_PREVIEW:
+    case CAM_STREAM_TYPE_POSTVIEW:
+    case CAM_STREAM_TYPE_SNAPSHOT:
+    case CAM_STREAM_TYPE_VIDEO:
+    case CAM_STREAM_TYPE_CALLBACK:
+    case CAM_STREAM_TYPE_IMPL_DEFINED:
+    case CAM_STREAM_TYPE_OFFLINE_PROC:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void forceBringupScrubStreamConfig(cam_stream_size_info_t *config,
+        const char *owner)
+{
+    if (!forceBringupNoPp() || config == NULL) {
+        return;
+    }
+
+    uint32_t num_streams = config->num_streams;
+    if (num_streams > MAX_NUM_STREAMS) {
+        LOGE("NX549J bringup: no_pp scrub owner=%s invalid num_streams=%u "
+                "cap=%u",
+                owner != NULL ? owner : "unknown", num_streams,
+                MAX_NUM_STREAMS);
+        num_streams = MAX_NUM_STREAMS;
+    }
+
+    for (uint32_t i = 0; i < num_streams; i++) {
+        if (forceBringupNoPpStreamType(config->type[i]) &&
+                config->postprocess_mask[i] != CAM_QCOM_FEATURE_NONE) {
+            LOGW("NX549J bringup: no_pp scrub %s stream[%u] type=%d "
+                    "pp=0x%llx -> 0",
+                    owner != NULL ? owner : "unknown",
+                    i, config->type[i], config->postprocess_mask[i]);
+            config->postprocess_mask[i] = CAM_QCOM_FEATURE_NONE;
+        }
+    }
+}
+
+static bool forceBringupNoCppCds()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_no_cpp_cds", prop, "0");
+    return atoi(prop) > 0 || forceBringupNoPp();
+}
+
+static bool forceBringupNoPostview()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_no_postview", prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupMinFeatures()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_min_features", prop,
+            forceBringupPreviewSizes() ? "1" : "0");
+    return atoi(prop) > 0;
+}
+
+static bool traceBringupParamBatch()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_param_trace", prop,
+            forceBringupPreviewSizes() ? "1" : "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupSkipUnsafeSnapshotBatch()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_skip_unsafe_snapshot_batch",
+            prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupPredeclareSnapshotStream()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_predeclare_snapshot_stream",
+            prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupSkipLateSnapshotStreamInfo()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_skip_late_snapshot_stream_info",
+            prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool nx549jMergeLateSnapshotStreamInfo()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.nx549j.merge_late_snapshot_stream_info",
+            prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupSkipOnlineRotation()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_skip_online_rotation", prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool forceBringupSkipUpdateDebugLevel()
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_skip_update_debug_level",
+            prop, "0");
+    return atoi(prop) > 0;
+}
+
+static bool clearBringupUnsafeParam(parm_buffer_t *table,
+        cam_intf_parm_type_t id, const char *name)
+{
+    if (id >= CAM_INTF_PARM_MAX || !table->is_valid[id]) {
+        return false;
+    }
+
+    LOGW("NX549J bringup: skip unsafe snapshot set_parms id=%d/%s",
+            id, name);
+    table->is_valid[id] = 0;
+    return true;
+}
+
+static bool getForcedBringupPreviewSize(cam_dimension_t *size)
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_preview_size", prop, "");
+    if (prop[0] == '\0' || strcmp(prop, "0") == 0) {
+        return false;
+    }
+
+    const char *separator = strchr(prop, 'x');
+    if (separator == NULL) {
+        LOGW("invalid persist.camera.force_bringup_preview_size=%s", prop);
+        return false;
+    }
+
+    cam_dimension_t forcedSize;
+    forcedSize.width = atoi(prop);
+    forcedSize.height = atoi(separator + 1);
+    if (!isSaneCameraSize(forcedSize) || !isSizeInTable(forcedSize,
+            NX549J_BRINGUP_PREVIEW_SIZES,
+            sizeof(NX549J_BRINGUP_PREVIEW_SIZES) /
+            sizeof(NX549J_BRINGUP_PREVIEW_SIZES[0]))) {
+        LOGW("unsupported persist.camera.force_bringup_preview_size=%s", prop);
+        return false;
+    }
+
+    *size = forcedSize;
+    return true;
+}
+
+static bool getForcedBringupPictureSize(cam_dimension_t *size)
+{
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_bringup_picture_size", prop, "");
+    if (prop[0] == '\0' || strcmp(prop, "0") == 0) {
+        if (forceBringupPreviewSizes()) {
+            if (getForcedBringupPreviewSize(size)) {
+                return true;
+            }
+            *size = NX549J_FALLBACK_STREAM_SIZE;
+            return true;
+        }
+        return false;
+    }
+
+    const char *separator = strchr(prop, 'x');
+    if (separator == NULL) {
+        LOGW("invalid persist.camera.force_bringup_picture_size=%s", prop);
+        return false;
+    }
+
+    cam_dimension_t forcedSize;
+    forcedSize.width = atoi(prop);
+    forcedSize.height = atoi(separator + 1);
+    if (!isSaneCameraSize(forcedSize)) {
+        LOGW("unsupported persist.camera.force_bringup_picture_size=%s", prop);
+        return false;
+    }
+
+    *size = forcedSize;
+    return true;
+}
+
+static String8 makeCameraSizeString(const cam_dimension_t &size)
+{
+    char val[32];
+    snprintf(val, sizeof(val), "%dx%d", size.width, size.height);
+    return String8(val);
+}
+
+static bool useBringupPreviewSizes(const cam_dimension_t *sizes, size_t len)
+{
+    if (forceBringupPreviewSizes()) {
+        return true;
+    }
+
+    if (sizes == NULL || len == 0) {
+        return true;
+    }
+
+    size_t maxLen = len > MAX_SIZES_CNT ? MAX_SIZES_CNT : len;
+    bool hasSaneSize = false;
+    for (size_t i = 0; i < maxLen; i++) {
+        if (!isSaneCameraSize(sizes[i])) {
+            continue;
+        }
+        hasSaneSize = true;
+        if (isBringupSafePreviewSize(sizes[i])) {
+            return false;
+        }
+    }
+    return hasSaneSize;
+}
+
 // Parameter keys to communicate between camera application and driver.
 const char QCameraParameters::KEY_QC_SUPPORTED_HFR_SIZES[] = "hfr-size-values";
 const char QCameraParameters::KEY_QC_PREVIEW_FRAME_RATE_MODE[] = "preview-frame-rate-mode";
@@ -999,6 +1304,10 @@ QCameraParameters::QCameraParameters()
       m_bMainCamera(false)
 {
     char value[PROPERTY_VALUE_MAX];
+    memset(&mNx549jLastPreviewStreamConfig, 0,
+            sizeof(mNx549jLastPreviewStreamConfig));
+    mNx549jHasLastPreviewStreamConfig = false;
+    m_rawSize = NX549J_FALLBACK_STREAM_SIZE;
     // TODO: may move to parameter instead of sysprop
     property_get("persist.debug.sf.showfps", value, "0");
     m_bDebugFps = atoi(value) > 0 ? true : false;
@@ -1022,6 +1331,7 @@ QCameraParameters::QCameraParameters()
     m_bLtmForSeeMoreEnabled = atoi(value);
 
     memset(&m_LiveSnapshotSize, 0, sizeof(m_LiveSnapshotSize));
+    memset(&m_maxPicSize, 0, sizeof(m_maxPicSize));
     memset(&m_default_fps_range, 0, sizeof(m_default_fps_range));
     memset(&m_hfrFpsRange, 0, sizeof(m_hfrFpsRange));
     memset(&m_stillmore_config, 0, sizeof(cam_still_more_t));
@@ -1134,6 +1444,9 @@ QCameraParameters::QCameraParameters(const String8 &params)
     mDualCamId(0),
     m_bMainCamera(false)
 {
+    memset(&mNx549jLastPreviewStreamConfig, 0,
+            sizeof(mNx549jLastPreviewStreamConfig));
+    mNx549jHasLastPreviewStreamConfig = false;
     memset(&m_LiveSnapshotSize, 0, sizeof(m_LiveSnapshotSize));
     memset(&m_default_fps_range, 0, sizeof(m_default_fps_range));
     memset(&m_hfrFpsRange, 0, sizeof(m_hfrFpsRange));
@@ -1345,12 +1658,12 @@ String8 QCameraParameters::createHfrSizesString(const cam_hfr_info_t *values, si
 
     if (len > 0) {
         snprintf(buffer, sizeof(buffer), "%dx%d",
-                 values[0].dim[0].width, values[0].dim[0].height);
+                 values[0].dim.width, values[0].dim.height);
         str.append(buffer);
     }
     for (size_t i = 1; i < len; i++) {
         snprintf(buffer, sizeof(buffer), ",%dx%d",
-                 values[i].dim[0].width, values[i].dim[0].height);
+                 values[i].dim.width, values[i].dim.height);
         str.append(buffer);
     }
     return str;
@@ -1498,11 +1811,78 @@ int32_t QCameraParameters::setPreviewSize(const QCameraParameters& params)
 {
     int width = 0, height = 0;
     int old_width = 0, old_height = 0;
+    cam_dimension_t requested_size;
+    bool use_bringup_sizes = useBringupPreviewSizes(
+            m_pCapability->preview_sizes_tbl,
+            m_pCapability->preview_sizes_tbl_cnt);
+    cam_dimension_t fallback_size = use_bringup_sizes ?
+            NX549J_BRINGUP_PREVIEW_SIZES[0] :
+            pickSaneCameraSize(m_pCapability->preview_sizes_tbl,
+                    m_pCapability->preview_sizes_tbl_cnt,
+                    MAX_SIZES_CNT,
+                    NX549J_FALLBACK_STREAM_SIZE);
+    cam_dimension_t forced_bringup_size;
+    bool has_forced_bringup_size = use_bringup_sizes &&
+            getForcedBringupPreviewSize(&forced_bringup_size);
+    if (has_forced_bringup_size) {
+        fallback_size = forced_bringup_size;
+    }
     params.getPreviewSize(&width, &height);
     CameraParameters::getPreviewSize(&old_width, &old_height);
+    requested_size.width = width;
+    requested_size.height = height;
+
+    if (has_forced_bringup_size) {
+        if (forced_bringup_size.width != old_width ||
+                forced_bringup_size.height != old_height) {
+            m_bNeedRestart = true;
+        }
+        LOGW("forcing bring-up preview size %dx%d over requested %dx%d",
+                forced_bringup_size.width, forced_bringup_size.height,
+                width, height);
+        CameraParameters::setPreviewSize(forced_bringup_size.width,
+                forced_bringup_size.height);
+        return NO_ERROR;
+    }
+
+    if ((!use_bringup_sizes && !isSaneCameraSizeTable(m_pCapability->preview_sizes_tbl,
+            m_pCapability->preview_sizes_tbl_cnt, MAX_SIZES_CNT)) ||
+            !isSaneCameraSize(requested_size)) {
+        LOGW("preview size invalid (%dx%d), using fallback %dx%d",
+                width, height, fallback_size.width, fallback_size.height);
+        if (fallback_size.width != old_width || fallback_size.height != old_height) {
+            m_bNeedRestart = true;
+        }
+        CameraParameters::setPreviewSize(fallback_size.width, fallback_size.height);
+        return NO_ERROR;
+    }
+
+    if (use_bringup_sizes && isSizeInTable(requested_size,
+            NX549J_BRINGUP_PREVIEW_SIZES,
+            PARAM_MAP_SIZE(NX549J_BRINGUP_PREVIEW_SIZES))) {
+        if (width != old_width || height != old_height) {
+            LOGI("Requested bring-up preview size %d x %d", width, height);
+            m_bNeedRestart = true;
+        }
+        CameraParameters::setPreviewSize(width, height);
+        return NO_ERROR;
+    }
+
+    if (use_bringup_sizes) {
+        LOGW("preview size %dx%d outside bring-up list, using %dx%d",
+                width, height, fallback_size.width, fallback_size.height);
+        if (fallback_size.width != old_width || fallback_size.height != old_height) {
+            m_bNeedRestart = true;
+        }
+        CameraParameters::setPreviewSize(fallback_size.width, fallback_size.height);
+        return NO_ERROR;
+    }
 
     // Validate the preview size
     for (size_t i = 0; i < m_pCapability->preview_sizes_tbl_cnt; ++i) {
+        if (!isSaneCameraSize(m_pCapability->preview_sizes_tbl[i])) {
+            continue;
+        }
         if (width ==  m_pCapability->preview_sizes_tbl[i].width
            && height ==  m_pCapability->preview_sizes_tbl[i].height) {
             // check if need to restart preview in case of preview size change
@@ -1522,14 +1902,17 @@ int32_t QCameraParameters::setPreviewSize(const QCameraParameters& params)
         parse_pair(prop, &width, &height, 'x', NULL);
         bool foundMatch = false;
         for (size_t i = 0; i < m_pCapability->preview_sizes_tbl_cnt; ++i) {
+            if (!isSaneCameraSize(m_pCapability->preview_sizes_tbl[i])) {
+                continue;
+            }
             if (width ==  m_pCapability->preview_sizes_tbl[i].width &&
                     height ==  m_pCapability->preview_sizes_tbl[i].height) {
                foundMatch = true;
             }
         }
         if (!foundMatch) {
-            width = m_pCapability->preview_sizes_tbl[0].width;
-            height = m_pCapability->preview_sizes_tbl[0].height;
+            width = fallback_size.width;
+            height = fallback_size.height;
         }
         // check if need to restart preview in case of preview size change
         if (width != old_width || height != old_height) {
@@ -1540,8 +1923,10 @@ int32_t QCameraParameters::setPreviewSize(const QCameraParameters& params)
         return NO_ERROR;
     }
 
-    LOGE("Invalid preview size requested: %dx%d", width, height);
-    return BAD_VALUE;
+    LOGW("Invalid preview size requested: %dx%d, falling back to %dx%d",
+            width, height, fallback_size.width, fallback_size.height);
+    CameraParameters::setPreviewSize(fallback_size.width, fallback_size.height);
+    return NO_ERROR;
 }
 
 /*===========================================================================
@@ -1559,15 +1944,59 @@ int32_t QCameraParameters::setPreviewSize(const QCameraParameters& params)
 int32_t QCameraParameters::setPictureSize(const QCameraParameters& params)
 {
     int width, height;
+    cam_dimension_t requested_size;
+    cam_dimension_t fallback_size = pickSaneCameraSize(
+            m_pCapability->picture_sizes_tbl,
+            m_pCapability->picture_sizes_tbl_cnt,
+            MAX_SIZES_CNT,
+            pickSaneCameraSize(m_pCapability->preview_sizes_tbl,
+                    m_pCapability->preview_sizes_tbl_cnt,
+                    MAX_SIZES_CNT,
+                    NX549J_FALLBACK_STREAM_SIZE));
     params.getPictureSize(&width, &height);
-    originalSnapshotDim.width = width;
-    originalSnapshotDim.height = height;
+    requested_size.width = width;
+    requested_size.height = height;
+    if (!isSaneCameraSize(requested_size)) {
+        LOGW("picture size invalid (%dx%d), using fallback %dx%d",
+                width, height, fallback_size.width, fallback_size.height);
+        width = fallback_size.width;
+        height = fallback_size.height;
+    }
     int old_width, old_height;
     CameraParameters::getPictureSize(&old_width, &old_height);
+
+    if (!isSaneCameraSizeTable(m_pCapability->picture_sizes_tbl,
+            m_pCapability->picture_sizes_tbl_cnt, MAX_SIZES_CNT)) {
+        LOGW("picture sizes table invalid, using fallback picture size %dx%d",
+                fallback_size.width, fallback_size.height);
+        CameraParameters::setPictureSize(fallback_size.width, fallback_size.height);
+        return NO_ERROR;
+    }
+
+    cam_dimension_t forced_bringup_size;
+    if (getForcedBringupPictureSize(&forced_bringup_size)) {
+        if (isSizeInTable(forced_bringup_size, m_pCapability->picture_sizes_tbl,
+                m_pCapability->picture_sizes_tbl_cnt)) {
+            LOGW("forcing bring-up picture size %dx%d over requested %dx%d",
+                    forced_bringup_size.width, forced_bringup_size.height,
+                    width, height);
+            width = forced_bringup_size.width;
+            height = forced_bringup_size.height;
+        } else {
+            LOGW("forced bring-up picture size %dx%d is not in capability table",
+                    forced_bringup_size.width, forced_bringup_size.height);
+        }
+    }
+
+    originalSnapshotDim.width = width;
+    originalSnapshotDim.height = height;
 
     // Validate the picture size
     if(!m_reprocScaleParam.isScaleEnabled()){
         for (size_t i = 0; i < m_pCapability->picture_sizes_tbl_cnt; ++i) {
+            if (!isSaneCameraSize(m_pCapability->picture_sizes_tbl[i])) {
+                continue;
+            }
             if (width ==  m_pCapability->picture_sizes_tbl[i].width
                && height ==  m_pCapability->picture_sizes_tbl[i].height) {
                 // check if need to restart preview in case of picture size change
@@ -1612,14 +2041,17 @@ int32_t QCameraParameters::setPictureSize(const QCameraParameters& params)
         parse_pair(prop, &width, &height, 'x', NULL);
         bool foundMatch = false;
         for (size_t i = 0; i < m_pCapability->picture_sizes_tbl_cnt; ++i) {
+            if (!isSaneCameraSize(m_pCapability->picture_sizes_tbl[i])) {
+                continue;
+            }
             if (width ==  m_pCapability->picture_sizes_tbl[i].width &&
                     height ==  m_pCapability->picture_sizes_tbl[i].height) {
                foundMatch = true;
             }
         }
         if (!foundMatch) {
-            width = m_pCapability->picture_sizes_tbl[0].width;
-            height = m_pCapability->picture_sizes_tbl[0].height;
+            width = fallback_size.width;
+            height = fallback_size.height;
         }
         // check if need to restart preview in case of preview size change
         if (width != old_width || height != old_height) {
@@ -1631,8 +2063,10 @@ int32_t QCameraParameters::setPictureSize(const QCameraParameters& params)
         LOGH("Secondary Camera: picture size %s", val);
         return NO_ERROR;
     }
-    LOGE("Invalid picture size requested: %dx%d", width, height);
-    return BAD_VALUE;
+    LOGW("Invalid picture size requested: %dx%d, falling back to %dx%d",
+            width, height, fallback_size.width, fallback_size.height);
+    CameraParameters::setPictureSize(fallback_size.width, fallback_size.height);
+    return NO_ERROR;
 }
 
 /*===========================================================================
@@ -1655,6 +2089,12 @@ void QCameraParameters::updateViewAngles()
 
     // Get current Picture & max Snapshot sizes
     getPictureSize(&stillWidth, &stillHeight);
+    if (!isSaneCameraSizeTable(m_pCapability->picture_sizes_tbl,
+            m_pCapability->picture_sizes_tbl_cnt, MAX_SIZES_CNT) ||
+            stillWidth <= 0 || stillHeight <= 0) {
+        LOGW("skip view angle update with invalid picture size table");
+        return;
+    }
     maxWidth  = m_pCapability->picture_sizes_tbl[0].width;
     maxHeight = m_pCapability->picture_sizes_tbl[0].height;
 
@@ -1711,6 +2151,15 @@ int32_t QCameraParameters::setVideoSize(const QCameraParameters& params)
     int width, height;
     str = params.get(KEY_VIDEO_SIZE);
     int old_width, old_height;
+    cam_dimension_t requested_size;
+    cam_dimension_t fallback_size = pickSaneCameraSize(
+            m_pCapability->video_sizes_tbl,
+            m_pCapability->video_sizes_tbl_cnt,
+            MAX_SIZES_CNT,
+            pickSaneCameraSize(m_pCapability->preview_sizes_tbl,
+                    m_pCapability->preview_sizes_tbl_cnt,
+                    MAX_SIZES_CNT,
+                    NX549J_FALLBACK_STREAM_SIZE));
     CameraParameters::getVideoSize(&old_width, &old_height);
     if(!str) {
         //If application didn't set this parameter string, use the values from
@@ -1720,9 +2169,38 @@ int32_t QCameraParameters::setVideoSize(const QCameraParameters& params)
     } else {
         params.getVideoSize(&width, &height);
     }
+    requested_size.width = width;
+    requested_size.height = height;
+
+    cam_dimension_t forced_bringup_size;
+    if (forceBringupPreviewSizes() &&
+            getForcedBringupPreviewSize(&forced_bringup_size)) {
+        if (forced_bringup_size.width != old_width ||
+                forced_bringup_size.height != old_height) {
+            m_bNeedRestart = true;
+        }
+        LOGW("forcing bring-up video size %dx%d over requested %dx%d",
+                forced_bringup_size.width, forced_bringup_size.height,
+                width, height);
+        CameraParameters::setVideoSize(forced_bringup_size.width,
+                forced_bringup_size.height);
+        return NO_ERROR;
+    }
+
+    if (!isSaneCameraSizeTable(m_pCapability->video_sizes_tbl,
+            m_pCapability->video_sizes_tbl_cnt, MAX_SIZES_CNT) ||
+            !isSaneCameraSize(requested_size)) {
+        LOGW("video sizes table invalid, using fallback video size %dx%d",
+                fallback_size.width, fallback_size.height);
+        CameraParameters::setVideoSize(fallback_size.width, fallback_size.height);
+        return NO_ERROR;
+    }
 
     // Validate the video size
     for (size_t i = 0; i < m_pCapability->video_sizes_tbl_cnt; ++i) {
+        if (!isSaneCameraSize(m_pCapability->video_sizes_tbl[i])) {
+            continue;
+        }
         if (width ==  m_pCapability->video_sizes_tbl[i].width
                 && height ==  m_pCapability->video_sizes_tbl[i].height) {
             // check if need to restart preview in case of video size change
@@ -1739,8 +2217,8 @@ int32_t QCameraParameters::setVideoSize(const QCameraParameters& params)
     }
     if (m_relCamSyncInfo.mode == CAM_MODE_SECONDARY) {
         // Set the default preview size for secondary camera
-        width = m_pCapability->video_sizes_tbl[0].width;
-        height = m_pCapability->video_sizes_tbl[0].height;
+        width = fallback_size.width;
+        height = fallback_size.height;
         // check if need to restart preview in case of preview size change
         if (width != old_width || height != old_height) {
             m_bNeedRestart = true;
@@ -1752,8 +2230,10 @@ int32_t QCameraParameters::setVideoSize(const QCameraParameters& params)
         return NO_ERROR;
     }
 
-    LOGE("Error !! Invalid video size requested: %dx%d", width, height);
-    return BAD_VALUE;
+    LOGW("Invalid video size requested: %dx%d, falling back to %dx%d",
+            width, height, fallback_size.width, fallback_size.height);
+    CameraParameters::setVideoSize(fallback_size.width, fallback_size.height);
+    return NO_ERROR;
 }
 
 /*===========================================================================
@@ -1949,7 +2429,15 @@ int32_t QCameraParameters::setLiveSnapshotSize(const QCameraParameters& params)
  *==========================================================================*/
 int32_t QCameraParameters::setRawSize(cam_dimension_t &dim)
 {
-    m_rawSize = dim;
+    if (isSaneCameraSize(dim)) {
+        m_rawSize = dim;
+    } else {
+        LOGW("raw size invalid (%dx%d), using fallback %dx%d",
+                dim.width, dim.height,
+                NX549J_FALLBACK_STREAM_SIZE.width,
+                NX549J_FALLBACK_STREAM_SIZE.height);
+        m_rawSize = NX549J_FALLBACK_STREAM_SIZE;
+    }
     return NO_ERROR;
 }
 /*===========================================================================
@@ -3974,10 +4462,7 @@ int32_t QCameraParameters::setQuadraCfaMode(uint32_t enable, bool initCommit) {
                 return FAILED_TRANSACTION;
             }
         }
-        if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf, CAM_INTF_PARM_QUADRA_CFA, enable)) {
-            LOGE("Failed to update Quadra CFA mode");
-            return BAD_VALUE;
-        }
+        LOGW("Quadra CFA backend param is not part of the NX549J camera daemon ABI");
         if (initCommit) {
             rc = commitSetBatch();
             if (rc != NO_ERROR) {
@@ -4450,6 +4935,18 @@ int32_t QCameraParameters::setZslMode(const QCameraParameters& params)
     const char *str_val  = params.get(KEY_QC_ZSL);
     const char *prev_val  = get(KEY_QC_ZSL);
     int32_t rc = NO_ERROR;
+    char prop[PROPERTY_VALUE_MAX];
+
+    property_get("persist.camera.disable_zsl", prop, "1");
+    if (atoi(prop) > 0) {
+        if (prev_val == NULL || strcmp(prev_val, VALUE_OFF) != 0 ||
+                m_bForceZslMode || m_bZslMode_new) {
+            set(KEY_QC_ZSL, VALUE_OFF);
+            rc = setZslMode(FALSE);
+            m_bNeedRestart = true;
+        }
+        return rc;
+    }
 
     if(m_bForceZslMode) {
         if (!m_bZslMode) {
@@ -4491,6 +4988,25 @@ int32_t QCameraParameters::setZslMode(const QCameraParameters& params)
 int32_t QCameraParameters::setZslMode(bool value)
 {
     int32_t rc = NO_ERROR;
+
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.disable_zsl", prop, "1");
+    if (atoi(prop) > 0) {
+        int32_t zslValue = 0;
+        set(KEY_QC_ZSL, VALUE_OFF);
+        m_bForceZslMode = false;
+        m_bZslMode_new = false;
+        m_bZslMode = false;
+        m_bNeedRestart = true;
+        if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
+                CAM_INTF_PARM_ZSL_MODE, zslValue)) {
+            rc = BAD_VALUE;
+        }
+        LOGI("ZSL Mode forced disabled by persist.camera.disable_zsl");
+        LOGH("enabled: %d rc = %d", m_bZslMode_new, rc);
+        return rc;
+    }
+
     if(m_bForceZslMode) {
         if (!m_bZslMode) {
             // Force ZSL mode to ON
@@ -4698,7 +5214,9 @@ int32_t QCameraParameters::setTemporalDenoise(const QCameraParameters& params)
                 if (m_bTNRPreviewOn) {
                     updateParamEntry(KEY_QC_CDS_MODE, CDS_MODE_OFF);
                 }
-                if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
+                if (forceBringupNoCppCds()) {
+                    LOGW("NX549J bringup: skip TNR CDS set-param while CPP CDS/DSDN is masked");
+                } else if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
                         CAM_INTF_PARM_CDS_MODE, cds_mode)) {
                     LOGE("Failed CDS MODE to update table");
                     return BAD_VALUE;
@@ -4744,11 +5262,40 @@ int32_t QCameraParameters::setTemporalDenoise(const QCameraParameters& params)
 int32_t QCameraParameters::setCameraMode(const QCameraParameters& params)
 {
     const char *str = params.get(KEY_QC_CAMERA_MODE);
+    int32_t cameraMode = 0;
+
     if (str != NULL) {
         set(KEY_QC_CAMERA_MODE, str);
+        cameraMode = atoi(str);
     } else {
         remove(KEY_QC_CAMERA_MODE);
     }
+
+    char prop[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.force_zte_camera_mode", prop, "-1");
+    int32_t forcedMode = atoi(prop);
+    if (forcedMode >= 0) {
+        cameraMode = forcedMode;
+    }
+
+    if (cameraMode < 0 || cameraMode > 255) {
+        LOGE("Invalid NX549J zte camera app mode %d", cameraMode);
+        return BAD_VALUE;
+    }
+
+    uint8_t zteCameraMode[4] = {
+        static_cast<uint8_t>(cameraMode), 0, 0, 0
+    };
+    size_t updatedCount = 0;
+    ADD_SET_PARAM_ARRAY_TO_BATCH(m_pParamBuf, NUBIA_13, zteCameraMode,
+            sizeof(zteCameraMode), updatedCount);
+    if (updatedCount != sizeof(zteCameraMode)) {
+        LOGE("Failed to set NX549J zte camera app mode %d", cameraMode);
+        return BAD_VALUE;
+    }
+
+    LOGW("NX549J zte camera app mode %d (param %s, override %s)",
+            cameraMode, str != NULL ? str : "null", prop);
     return NO_ERROR;
 }
 
@@ -5202,6 +5749,55 @@ int32_t QCameraParameters::updateParameters(const String8& p,
     m_bNeedRestart = false;
     QCameraParameters params(p);
 
+    if (forceBringupPreviewSizes()) {
+        LOGH("force bring-up preview: disabling advanced app camera params");
+        cam_dimension_t forcedPictureSize;
+        if (getForcedBringupPictureSize(&forcedPictureSize)) {
+            String8 forcedPictureSizeStr = makeCameraSizeString(forcedPictureSize);
+            LOGE("NX549J bringup: forcing app picture-size to %s",
+                    forcedPictureSizeStr.string());
+            params.set(KEY_PICTURE_SIZE, forcedPictureSizeStr.string());
+        }
+        cam_dimension_t forcedVideoSize;
+        if (getForcedBringupPreviewSize(&forcedVideoSize)) {
+            String8 forcedVideoSizeStr = makeCameraSizeString(forcedVideoSize);
+            LOGE("NX549J bringup: forcing app video-size to %s",
+                    forcedVideoSizeStr.string());
+            params.set(KEY_VIDEO_SIZE, forcedVideoSizeStr.string());
+        }
+        params.set(KEY_QC_ZSL, VALUE_OFF);
+        params.set(KEY_QC_ZSL_BURST_INTERVAL, "1");
+        params.set(KEY_QC_ZSL_BURST_LOOKBACK, "0");
+        params.set(KEY_QC_ZSL_QUEUE_DEPTH, "1");
+        params.set(KEY_QC_HIGH_DYNAMIC_RANGE_IMAGING, VALUE_OFF);
+        params.set(KEY_QC_HDR_MODE, HDR_MODE_MULTI_FRAME);
+        params.set(KEY_QC_HDR_NEED_1X, VALUE_FALSE);
+        params.set(KEY_QC_SENSOR_HDR, VALUE_OFF);
+        params.set(KEY_QC_VIDEO_HDR, VALUE_OFF);
+        params.set(KEY_QC_AUTO_HDR_ENABLE, VALUE_DISABLE);
+        params.set(KEY_QC_AE_BRACKET_HDR, AE_BRACKET_OFF);
+        params.remove(KEY_QC_CAPTURE_BURST_EXPOSURE);
+        params.set(KEY_QC_DENOISE, DENOISE_OFF);
+        params.set(KEY_QC_TNR_MODE, VALUE_OFF);
+        params.set(KEY_QC_VIDEO_TNR_MODE, VALUE_OFF);
+        params.set(KEY_QC_CDS_MODE, CDS_MODE_OFF);
+        params.set(KEY_QC_VIDEO_CDS_MODE, CDS_MODE_OFF);
+        params.set(KEY_QC_NOISE_REDUCTION_MODE, VALUE_OFF);
+        params.set(KEY_QC_LENSSHADE, VALUE_DISABLE);
+        params.set(KEY_QC_MEMORY_COLOR_ENHANCEMENT, VALUE_DISABLE);
+        params.set(KEY_QC_TINTLESS_ENABLE, VALUE_DISABLE);
+        params.set(KEY_QC_SCENE_DETECT, VALUE_OFF);
+        params.set(KEY_QC_SCENE_SELECTION, VALUE_DISABLE);
+        params.set(KEY_QC_SEE_MORE, VALUE_OFF);
+        params.set(KEY_QC_STILL_MORE, STILL_MORE_OFF);
+        char rdiProp[PROPERTY_VALUE_MAX];
+        property_get("persist.camera.rdi.mode", rdiProp, VALUE_DISABLE);
+        if (!strcmp(rdiProp, VALUE_ENABLE)) {
+            LOGW("NX549J bringup: forcing app rdi-mode to enable");
+            params.set(KEY_QC_RDI_MODE, VALUE_ENABLE);
+        }
+    }
+
     if(initBatchUpdate(m_pParamBuf) < 0 ) {
         LOGE("Failed to initialize group update table");
         rc = BAD_TYPE;
@@ -5369,9 +5965,39 @@ int32_t QCameraParameters::initDefaultParameters()
     set(QCameraParameters::KEY_FOCUS_DISTANCES, "Infinity,Infinity,Infinity");
     set(KEY_QC_AUTO_HDR_SUPPORTED,
         (m_pCapability->auto_hdr_supported)? VALUE_TRUE : VALUE_FALSE);
+    cam_dimension_t fallbackPreviewSize = pickSaneCameraSize(
+            m_pCapability->preview_sizes_tbl,
+            m_pCapability->preview_sizes_tbl_cnt,
+            MAX_SIZES_CNT,
+            NX549J_FALLBACK_STREAM_SIZE);
+    bool useBringupPreviewTable = useBringupPreviewSizes(
+            m_pCapability->preview_sizes_tbl,
+            m_pCapability->preview_sizes_tbl_cnt);
     // Set supported preview sizes
-    if (m_pCapability->preview_sizes_tbl_cnt > 0 &&
-        m_pCapability->preview_sizes_tbl_cnt <= MAX_SIZES_CNT) {
+    if (useBringupPreviewTable) {
+        String8 previewSizeValues = createSizesString(
+                NX549J_BRINGUP_PREVIEW_SIZES,
+                PARAM_MAP_SIZE(NX549J_BRINGUP_PREVIEW_SIZES));
+        set(KEY_SUPPORTED_PREVIEW_SIZES, previewSizeValues.string());
+        fallbackPreviewSize = NX549J_BRINGUP_PREVIEW_SIZES[0];
+        getForcedBringupPreviewSize(&fallbackPreviewSize);
+        CameraParameters::setPreviewSize(fallbackPreviewSize.width,
+                                         fallbackPreviewSize.height);
+        if (forceBringupPreviewSizes()) {
+            LOGW("persist.camera.force_bringup_preview enabled, using preview list: %s",
+                    previewSizeValues.string());
+        } else if (m_pCapability->preview_sizes_tbl_cnt > 0) {
+            LOGW("preview table has no safe bring-up size; first=%dx%d count=%zu, using: %s",
+                    m_pCapability->preview_sizes_tbl[0].width,
+                    m_pCapability->preview_sizes_tbl[0].height,
+                    m_pCapability->preview_sizes_tbl_cnt,
+                    previewSizeValues.string());
+        } else {
+            LOGW("preview table empty, using bring-up list: %s",
+                    previewSizeValues.string());
+        }
+    } else if (isSaneCameraSizeTable(m_pCapability->preview_sizes_tbl,
+            m_pCapability->preview_sizes_tbl_cnt, MAX_SIZES_CNT)) {
         String8 previewSizeValues = createSizesString(
                 m_pCapability->preview_sizes_tbl, m_pCapability->preview_sizes_tbl_cnt);
         set(KEY_SUPPORTED_PREVIEW_SIZES, previewSizeValues.string());
@@ -5380,12 +6006,27 @@ int32_t QCameraParameters::initDefaultParameters()
         CameraParameters::setPreviewSize(m_pCapability->preview_sizes_tbl[0].width,
                                          m_pCapability->preview_sizes_tbl[0].height);
     } else {
-        LOGW("supported preview sizes cnt is 0 or exceeds max!!!");
+        String8 previewSizeValues = createSizesString(&fallbackPreviewSize, 1);
+        set(KEY_SUPPORTED_PREVIEW_SIZES, previewSizeValues.string());
+        CameraParameters::setPreviewSize(fallbackPreviewSize.width,
+                                         fallbackPreviewSize.height);
+        LOGW("supported preview sizes invalid, using fallback: %s",
+                previewSizeValues.string());
     }
 
     // Set supported video sizes
-    if (m_pCapability->video_sizes_tbl_cnt > 0 &&
-        m_pCapability->video_sizes_tbl_cnt <= MAX_SIZES_CNT) {
+    if (forceBringupPreviewSizes()) {
+        cam_dimension_t forcedVideoSize = fallbackPreviewSize;
+        getForcedBringupPreviewSize(&forcedVideoSize);
+        String8 videoSizeValues = makeCameraSizeString(forcedVideoSize);
+        set(KEY_SUPPORTED_VIDEO_SIZES, videoSizeValues.string());
+        set(KEY_PREFERRED_PREVIEW_SIZE_FOR_VIDEO, videoSizeValues.string());
+        CameraParameters::setVideoSize(forcedVideoSize.width,
+                                       forcedVideoSize.height);
+        LOGW("persist.camera.force_bringup_preview enabled, using video list/default: %s",
+                videoSizeValues.string());
+    } else if (isSaneCameraSizeTable(m_pCapability->video_sizes_tbl,
+            m_pCapability->video_sizes_tbl_cnt, MAX_SIZES_CNT)) {
         String8 videoSizeValues = createSizesString(
                 m_pCapability->video_sizes_tbl, m_pCapability->video_sizes_tbl_cnt);
         set(KEY_SUPPORTED_VIDEO_SIZES, videoSizeValues.string());
@@ -5395,25 +6036,79 @@ int32_t QCameraParameters::initDefaultParameters()
                                        m_pCapability->video_sizes_tbl[0].height);
 
         //Set preferred Preview size for video
-        String8 vSize = createSizesString(&m_pCapability->preview_sizes_tbl[0], 1);
+        String8 vSize = createSizesString(&fallbackPreviewSize, 1);
         set(KEY_PREFERRED_PREVIEW_SIZE_FOR_VIDEO, vSize.string());
     } else {
-        LOGW("supported video sizes cnt is 0 or exceeds max!!!");
+        cam_dimension_t fallbackVideoSize = pickSaneCameraSize(
+                m_pCapability->video_sizes_tbl,
+                m_pCapability->video_sizes_tbl_cnt,
+                MAX_SIZES_CNT,
+                fallbackPreviewSize);
+        String8 videoSizeValues = createSizesString(&fallbackVideoSize, 1);
+        set(KEY_SUPPORTED_VIDEO_SIZES, videoSizeValues.string());
+        set(KEY_PREFERRED_PREVIEW_SIZE_FOR_VIDEO, videoSizeValues.string());
+        CameraParameters::setVideoSize(fallbackVideoSize.width,
+                                       fallbackVideoSize.height);
+        LOGW("supported video sizes cnt is 0 or exceeds max, using fallback: %s",
+                videoSizeValues.string());
     }
 
     // Set supported picture sizes
-    if (m_pCapability->picture_sizes_tbl_cnt > 0 &&
-        m_pCapability->picture_sizes_tbl_cnt <= MAX_SIZES_CNT) {
-        String8 pictureSizeValues = createSizesString(
-                m_pCapability->picture_sizes_tbl, m_pCapability->picture_sizes_tbl_cnt);
-        set(KEY_SUPPORTED_PICTURE_SIZES, pictureSizeValues.string());
-        LOGH("supported pic sizes: %s", pictureSizeValues.string());
-        // Set default picture size to the smallest resolution
-        CameraParameters::setPictureSize(
-           m_pCapability->picture_sizes_tbl[m_pCapability->picture_sizes_tbl_cnt-1].width,
-           m_pCapability->picture_sizes_tbl[m_pCapability->picture_sizes_tbl_cnt-1].height);
+    if (isSaneCameraSizeTable(m_pCapability->picture_sizes_tbl,
+            m_pCapability->picture_sizes_tbl_cnt, MAX_SIZES_CNT)) {
+        cam_dimension_t defaultPictureSize =
+                m_pCapability->picture_sizes_tbl[m_pCapability->picture_sizes_tbl_cnt-1];
+        cam_dimension_t forcedPictureSize;
+        if (getForcedBringupPictureSize(&forcedPictureSize)) {
+            if (isSizeInTable(forcedPictureSize, m_pCapability->picture_sizes_tbl,
+                    m_pCapability->picture_sizes_tbl_cnt)) {
+                defaultPictureSize = forcedPictureSize;
+                String8 forcedPictureSizeValues =
+                        makeCameraSizeString(defaultPictureSize);
+                set(KEY_SUPPORTED_PICTURE_SIZES,
+                        forcedPictureSizeValues.string());
+                LOGE("NX549J bringup: using forced picture list/default %s",
+                        forcedPictureSizeValues.string());
+            } else {
+                String8 pictureSizeValues = createSizesString(
+                        m_pCapability->picture_sizes_tbl,
+                        m_pCapability->picture_sizes_tbl_cnt);
+                set(KEY_SUPPORTED_PICTURE_SIZES, pictureSizeValues.string());
+                LOGW("forced default picture size %dx%d is not in capability table",
+                        forcedPictureSize.width, forcedPictureSize.height);
+                LOGH("supported pic sizes: %s", pictureSizeValues.string());
+            }
+        } else {
+            String8 pictureSizeValues = createSizesString(
+                    m_pCapability->picture_sizes_tbl,
+                    m_pCapability->picture_sizes_tbl_cnt);
+            set(KEY_SUPPORTED_PICTURE_SIZES, pictureSizeValues.string());
+            LOGH("supported pic sizes: %s", pictureSizeValues.string());
+        }
+        // Set default picture size to the smallest resolution, or the forced
+        // bring-up size when basic preview is still being isolated.
+        if (getForcedBringupPictureSize(&forcedPictureSize) &&
+                isSizeInTable(forcedPictureSize, m_pCapability->picture_sizes_tbl,
+                        m_pCapability->picture_sizes_tbl_cnt)) {
+            defaultPictureSize = forcedPictureSize;
+            if (!forceBringupPreviewSizes()) {
+                LOGW("using forced bring-up default picture size %dx%d",
+                        defaultPictureSize.width, defaultPictureSize.height);
+            }
+        }
+        CameraParameters::setPictureSize(defaultPictureSize.width,
+                defaultPictureSize.height);
     } else {
-        LOGW("supported picture sizes cnt is 0 or exceeds max!!!");
+        cam_dimension_t fallbackPicSize = pickSaneCameraSize(
+                m_pCapability->picture_sizes_tbl,
+                m_pCapability->picture_sizes_tbl_cnt,
+                MAX_SIZES_CNT,
+                fallbackPreviewSize);
+        String8 pictureSizeValues = createSizesString(&fallbackPicSize, 1);
+        set(KEY_SUPPORTED_PICTURE_SIZES, pictureSizeValues.string());
+        CameraParameters::setPictureSize(fallbackPicSize.width, fallbackPicSize.height);
+        LOGW("supported picture sizes cnt is 0 or exceeds max, falling back to %s",
+                pictureSizeValues.string());
     }
 
     // Need check if scale should be enabled
@@ -5427,9 +6122,13 @@ int32_t QCameraParameters::initDefaultParameters()
         if(rc_s == NO_ERROR){
             cam_dimension_t *totalSizeTbl = m_reprocScaleParam.getTotalSizeTbl();
             size_t totalSizeCnt = m_reprocScaleParam.getTotalSizeTblCnt();
-            String8 pictureSizeValues = createSizesString(totalSizeTbl, totalSizeCnt);
-            set(KEY_SUPPORTED_PICTURE_SIZES, pictureSizeValues.string());
-            LOGH("scaled supported pic sizes: %s", pictureSizeValues.string());
+            if (isSaneCameraSizeTable(totalSizeTbl, totalSizeCnt, MAX_SIZES_CNT)) {
+                String8 pictureSizeValues = createSizesString(totalSizeTbl, totalSizeCnt);
+                set(KEY_SUPPORTED_PICTURE_SIZES, pictureSizeValues.string());
+                LOGH("scaled supported pic sizes: %s", pictureSizeValues.string());
+            } else {
+                LOGW("scaled picture sizes invalid, keeping fallback picture sizes");
+            }
         }else{
             m_reprocScaleParam.setScaleEnable(false);
             LOGW("reset scaled picture size table failed.");
@@ -5490,11 +6189,16 @@ int32_t QCameraParameters::initDefaultParameters()
     CameraParameters::setPictureFormat(PIXEL_FORMAT_JPEG);
     // Set raw image size
     char raw_size_str[32];
+    cam_dimension_t rawSize = m_pCapability->raw_dim[0];
+    if (!isSaneCameraSize(rawSize)) {
+        rawSize = fallbackPreviewSize;
+    }
+    setRawSize(rawSize);
     snprintf(raw_size_str, sizeof(raw_size_str), "%dx%d",
-             m_pCapability->raw_dim[0].width, m_pCapability->raw_dim[0].height);
+             rawSize.width, rawSize.height);
     set(KEY_QC_RAW_PICUTRE_SIZE, raw_size_str);
     LOGD("KEY_QC_RAW_PICUTRE_SIZE: w: %d, h: %d ",
-       m_pCapability->raw_dim[0].width, m_pCapability->raw_dim[0].height);
+       rawSize.width, rawSize.height);
 
     //set default jpeg quality and thumbnail quality
     set(KEY_JPEG_QUALITY, 85);
@@ -5545,7 +6249,9 @@ int32_t QCameraParameters::initDefaultParameters()
             setFocusMode(FOCUS_MODE_FIXED);
         }
     } else {
-        LOGW("supported focus modes cnt is 0!!!");
+        LOGW("supported focus modes cnt is 0, falling back to fixed focus");
+        set(KEY_SUPPORTED_FOCUS_MODES, FOCUS_MODE_FIXED);
+        setFocusMode(FOCUS_MODE_FIXED);
     }
 
     // Set focus areas
@@ -5982,12 +6688,16 @@ int32_t QCameraParameters::initDefaultParameters()
     String8 enableDisableValues = createValuesStringFromMap(
             ENABLE_DISABLE_MODES_MAP, PARAM_MAP_SIZE(ENABLE_DISABLE_MODES_MAP));
 
+    if (forceBringupMinFeatures()) {
+        LOGW("NX549J bringup: defaulting MCE/lensshade/tintless to disabled");
+    }
+
     // Set Lens Shading
     set(KEY_QC_SUPPORTED_LENSSHADE_MODES, enableDisableValues);
-    setLensShadeValue(VALUE_ENABLE);
+    setLensShadeValue(forceBringupMinFeatures() ? VALUE_DISABLE : VALUE_ENABLE);
     // Set MCE
     set(KEY_QC_SUPPORTED_MEM_COLOR_ENHANCE_MODES, enableDisableValues);
-    setMCEValue(VALUE_ENABLE);
+    setMCEValue(forceBringupMinFeatures() ? VALUE_DISABLE : VALUE_ENABLE);
 
     // Set DIS
     set(KEY_QC_SUPPORTED_DIS_MODES, enableDisableValues);
@@ -6087,15 +6797,26 @@ int32_t QCameraParameters::initDefaultParameters()
     memset(value, 0x0, PROPERTY_VALUE_MAX);
     property_get("persist.camera.zsl.mode", value, "0");
     int32_t zsl_mode = atoi(value);
-    if((zsl_mode == 1) ||
+
+    char disableZsl[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.disable_zsl", disableZsl, "1");
+    if((atoi(disableZsl) == 0) &&
+            ((zsl_mode == 1) ||
             (m_bZslMode == true) ||
-            (m_relCamSyncInfo.sync_control == CAM_SYNC_RELATED_SENSORS_ON)) {
+            (m_relCamSyncInfo.sync_control == CAM_SYNC_RELATED_SENSORS_ON))) {
         LOGH("%d: Forcing Camera to ZSL mode enabled");
         set(KEY_QC_ZSL, VALUE_ON);
         m_bForceZslMode = true;
         m_bZslMode = true;
-        int32_t value = m_bForceZslMode;
-        ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf, CAM_INTF_PARM_ZSL_MODE, value);
+        int32_t zslValue = m_bForceZslMode;
+        ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf, CAM_INTF_PARM_ZSL_MODE, zslValue);
+    } else if (atoi(disableZsl) > 0) {
+        LOGH("ZSL mode disabled by persist.camera.disable_zsl");
+        set(KEY_QC_ZSL, VALUE_OFF);
+        m_bForceZslMode = false;
+        m_bZslMode = false;
+        int32_t zslValue = 0;
+        ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf, CAM_INTF_PARM_ZSL_MODE, zslValue);
     }
     m_bZslMode_new = m_bZslMode;
 
@@ -6103,7 +6824,14 @@ int32_t QCameraParameters::initDefaultParameters()
 
     // Rdi mode
     set(KEY_QC_SUPPORTED_RDI_MODES, enableDisableValues);
-    setRdiMode(VALUE_DISABLE);
+    char rdiModeProp[PROPERTY_VALUE_MAX];
+    property_get("persist.camera.rdi.mode", rdiModeProp, VALUE_DISABLE);
+    if (forceBringupPreviewSizes() && !strcmp(rdiModeProp, VALUE_ENABLE)) {
+        LOGW("NX549J bringup: defaulting RDI mode to enable");
+        setRdiMode(VALUE_ENABLE);
+    } else {
+        setRdiMode(VALUE_DISABLE);
+    }
 
     // Secure mode
     set(KEY_QC_SUPPORTED_SECURE_MODES, enableDisableValues);
@@ -6213,8 +6941,8 @@ int32_t QCameraParameters::initDefaultParameters()
     pic_dim.width = 0;
     pic_dim.height = 0;
 
-    if (m_pCapability->picture_sizes_tbl_cnt > 0 &&
-        m_pCapability->picture_sizes_tbl_cnt <= MAX_SIZES_CNT) {
+    if (isSaneCameraSizeTable(m_pCapability->picture_sizes_tbl,
+            m_pCapability->picture_sizes_tbl_cnt, MAX_SIZES_CNT)) {
         for(uint32_t i = 0;
                 i < m_pCapability->picture_sizes_tbl_cnt; i++) {
             if ((pic_dim.width * pic_dim.height) <
@@ -6230,7 +6958,13 @@ int32_t QCameraParameters::initDefaultParameters()
                 pic_dim.height);
         setMaxPicSize(pic_dim);
     } else {
-        LOGW("supported picture sizes cnt is 0 or exceeds max!!!");
+        pic_dim = pickSaneCameraSize(m_pCapability->preview_sizes_tbl,
+                m_pCapability->preview_sizes_tbl_cnt,
+                MAX_SIZES_CNT,
+                NX549J_FALLBACK_STREAM_SIZE);
+        LOGW("supported picture sizes invalid, max pic fallback = %d %d",
+                pic_dim.width, pic_dim.height);
+        setMaxPicSize(pic_dim);
     }
 
     setManualCaptureMode(CAM_MANUAL_CAPTURE_TYPE_OFF);
@@ -6263,14 +6997,14 @@ int32_t QCameraParameters::allocate()
         return NO_MEMORY;
     }
 
-    rc = m_pParamHeap->allocate(1, QCAMERA_PARM_BUFFER_SIZE, NON_SECURE);
+    rc = m_pParamHeap->allocate(1, sizeof(parm_buffer_t), NON_SECURE);
     if(rc != OK) {
         rc = NO_MEMORY;
         LOGE("Error!! Param buffers have not been allocated");
         delete m_pParamHeap;
         m_pParamHeap = NULL;
     } else {
-        memset(DATA_PTR(m_pParamHeap, 0), 0, QCAMERA_PARM_BUFFER_SIZE);
+        memset(DATA_PTR(m_pParamHeap, 0), 0, sizeof(parm_buffer_t));
     }
 
     return rc;
@@ -6311,7 +7045,7 @@ int32_t QCameraParameters::init(cam_capability_t *capabilities,
     rc = QCameraBufferMaps::makeSingletonBufMapList(
             CAM_MAPPING_BUF_TYPE_PARM_BUF, 0 /*stream id*/,
             0 /*buffer index*/, -1 /*plane index*/, 0 /*cookie*/,
-            m_pParamHeap->getFd(0), QCAMERA_PARM_BUFFER_SIZE, bufMapList,
+            m_pParamHeap->getFd(0), sizeof(parm_buffer_t), bufMapList,
                     m_pParamHeap->getPtr(0));
 
     if (rc == NO_ERROR) {
@@ -7920,6 +8654,12 @@ int32_t QCameraParameters::setAwbLock(const char *awbLockStr)
  *==========================================================================*/
 int32_t QCameraParameters::setMCEValue(const char *mceStr)
 {
+    if (forceBringupMinFeatures() && mceStr != NULL &&
+            strcmp(mceStr, VALUE_DISABLE) != 0) {
+        LOGW("NX549J bringup: forcing MCE %s -> disable", mceStr);
+        mceStr = VALUE_DISABLE;
+    }
+
     if (mceStr != NULL) {
         int32_t value = lookupAttr(ENABLE_DISABLE_MODES_MAP,
                 PARAM_MAP_SIZE(ENABLE_DISABLE_MODES_MAP), mceStr);
@@ -7955,7 +8695,8 @@ int32_t QCameraParameters::setTintlessValue(const QCameraParameters& params)
     char prop[PROPERTY_VALUE_MAX];
 
     memset(prop, 0, sizeof(prop));
-    property_get("persist.camera.tintless", prop, VALUE_ENABLE);
+    property_get("persist.camera.tintless", prop,
+            forceBringupMinFeatures() ? VALUE_DISABLE : VALUE_ENABLE);
     if (str != NULL) {
         if (prev_str == NULL ||
             strcmp(str, prev_str) != 0) {
@@ -8006,6 +8747,12 @@ void QCameraParameters::setTintless(bool enable)
  *==========================================================================*/
 int32_t QCameraParameters::setTintlessValue(const char *tintStr)
 {
+    if (forceBringupMinFeatures() && tintStr != NULL &&
+            strcmp(tintStr, VALUE_DISABLE) != 0) {
+        LOGW("NX549J bringup: forcing tintless %s -> disable", tintStr);
+        tintStr = VALUE_DISABLE;
+    }
+
     if (tintStr != NULL) {
         int32_t value = lookupAttr(ENABLE_DISABLE_MODES_MAP,
                 PARAM_MAP_SIZE(ENABLE_DISABLE_MODES_MAP), tintStr);
@@ -8041,6 +8788,14 @@ int32_t QCameraParameters::setCDSMode(const QCameraParameters& params)
     const char *video_str = params.get(KEY_QC_VIDEO_CDS_MODE);
     const char *video_prev_str = get(KEY_QC_VIDEO_CDS_MODE);
     int32_t rc = NO_ERROR;
+
+    if (forceBringupNoCppCds()) {
+        updateParamEntry(KEY_QC_CDS_MODE, CDS_MODE_OFF);
+        updateParamEntry(KEY_QC_VIDEO_CDS_MODE, CDS_MODE_OFF);
+        mCds_mode = CAM_CDS_MODE_OFF;
+        LOGW("NX549J bringup: skip CDS set-param while CPP CDS/DSDN is masked");
+        return rc;
+    }
 
     if (m_bRecordingHint_new == true) {
         if (video_str) {
@@ -8486,6 +9241,12 @@ int32_t QCameraParameters::setHighFrameRate(const int32_t hfrMode)
  *==========================================================================*/
 int32_t QCameraParameters::setLensShadeValue(const char *lensShadeStr)
 {
+    if (forceBringupMinFeatures() && lensShadeStr != NULL &&
+            strcmp(lensShadeStr, VALUE_DISABLE) != 0) {
+        LOGW("NX549J bringup: forcing lensshade %s -> disable", lensShadeStr);
+        lensShadeStr = VALUE_DISABLE;
+    }
+
     if (lensShadeStr != NULL) {
         int32_t value = lookupAttr(ENABLE_DISABLE_MODES_MAP,
                 PARAM_MAP_SIZE(ENABLE_DISABLE_MODES_MAP), lensShadeStr);
@@ -10162,6 +10923,28 @@ int32_t QCameraParameters::getStreamFormat(cam_stream_type_t streamType,
         } else {
             format = mPreviewFormat;
         }
+        {
+            char forcedFormat[PROPERTY_VALUE_MAX];
+            property_get("persist.camera.force_bringup_preview_format",
+                    forcedFormat, "");
+            if (!strcmp(forcedFormat, "nv12")) {
+                LOGW("NX549J bringup: forcing preview format %d -> NV12",
+                        format);
+                format = CAM_FORMAT_YUV_420_NV12;
+            } else if (!strcmp(forcedFormat, "nv21")) {
+                LOGW("NX549J bringup: forcing preview format %d -> NV21",
+                        format);
+                format = CAM_FORMAT_YUV_420_NV21;
+            } else if (!strcmp(forcedFormat, "nv12-venus")) {
+                LOGW("NX549J bringup: forcing preview format %d -> NV12_VENUS",
+                        format);
+                format = CAM_FORMAT_YUV_420_NV12_VENUS;
+            } else if (!strcmp(forcedFormat, "nv21-venus")) {
+                LOGW("NX549J bringup: forcing preview format %d -> NV21_VENUS",
+                        format);
+                format = CAM_FORMAT_YUV_420_NV21_VENUS;
+            }
+        }
         break;
     case CAM_STREAM_TYPE_POSTVIEW:
     case CAM_STREAM_TYPE_CALLBACK:
@@ -10179,8 +10962,10 @@ int32_t QCameraParameters::getStreamFormat(cam_stream_type_t streamType,
                 featureMask,
                 &analysisInfo);
         if (ret != NO_ERROR) {
-            LOGE("getAnalysisInfo failed, ret = %d", ret);
-            return ret;
+            LOGW("getAnalysisInfo failed, using app preview format, ret = %d", ret);
+            format = mAppPreviewFormat;
+            ret = NO_ERROR;
+            break;
         }
 
         if (analysisInfo.hw_analysis_supported &&
@@ -10414,9 +11199,17 @@ int32_t QCameraParameters::getStreamDimension(cam_stream_type_t streamType,
                 FALSE,
                 featureMask,
                 &analysisInfo);
-        if (ret != NO_ERROR) {
-            LOGE("getAnalysisInfo failed, ret = %d", ret);
-            return ret;
+        if (ret != NO_ERROR ||
+                analysisInfo.analysis_max_res.width == 0 ||
+                analysisInfo.analysis_max_res.height == 0) {
+            if (prv_dim.width <= 0 || prv_dim.height <= 0) {
+                prv_dim.width = 640;
+                prv_dim.height = 480;
+            }
+            dim = prv_dim;
+            LOGW("getAnalysisInfo failed or returned invalid max size, using %dx%d",
+                    dim.width, dim.height);
+            return NO_ERROR;
         }
 
         max_dim.width = analysisInfo.analysis_max_res.width;
@@ -10470,6 +11263,7 @@ char* QCameraParameters::getParameters()
     String8 str;
 
     int cur_width, cur_height;
+    bool restorePictureSize = false;
     //Need take care Scale picture size
     if(m_reprocScaleParam.isScaleEnabled() &&
         m_reprocScaleParam.isUnderScaling()){
@@ -10483,6 +11277,15 @@ char* QCameraParameters::getParameters()
         snprintf(buffer, sizeof(buffer), "%dx%d", scale_width, scale_height);
         pic_size.append(buffer);
         set(CameraParameters::KEY_PICTURE_SIZE, pic_size);
+        restorePictureSize = true;
+    } else if (forceBringupPreviewSizes()) {
+        cam_dimension_t forcedPictureSize;
+        if (getForcedBringupPictureSize(&forcedPictureSize)) {
+            getPictureSize(&cur_width, &cur_height);
+            String8 pic_size = makeCameraSizeString(forcedPictureSize);
+            set(CameraParameters::KEY_PICTURE_SIZE, pic_size);
+            restorePictureSize = true;
+        }
     }
 
     str = flatten();
@@ -10493,8 +11296,7 @@ char* QCameraParameters::getParameters()
         strParams[str.length()] = 0;
     }
 
-    if(m_reprocScaleParam.isScaleEnabled() &&
-        m_reprocScaleParam.isUnderScaling()){
+    if(restorePictureSize){
         //need set back picture size
         String8 pic_size;
         char buffer[32];
@@ -11721,8 +12523,14 @@ int32_t QCameraParameters::getSensorOutputSize(cam_dimension_t max_dim, cam_dime
         }
     }
 
-    if (max_dim.width == 0 || max_dim.height == 0) {
-        max_dim = m_pCapability->raw_dim[0];
+    if (!isSaneCameraSize(max_dim)) {
+        if (isSaneCameraSize(m_pCapability->raw_dim[0])) {
+            max_dim = m_pCapability->raw_dim[0];
+        } else {
+            max_dim = NX549J_FALLBACK_STREAM_SIZE;
+        }
+        LOGW("max dimension invalid, using fallback %d x %d",
+                max_dim.width, max_dim.height);
     }
 
     if(initBatchUpdate(m_pParamBuf) < 0 ) {
@@ -11757,12 +12565,14 @@ int32_t QCameraParameters::getSensorOutputSize(cam_dimension_t max_dim, cam_dime
     READ_PARAM_ENTRY(m_pParamBuf, CAM_INTF_PARM_RAW_DIMENSION, sensor_dim);
 
     LOGH("RAW Dimension = %d X %d",sensor_dim.width,sensor_dim.height);
-    if (sensor_dim.width == 0 || sensor_dim.height == 0) {
-        LOGW("Error getting RAW size. Setting to Capability value");
-        if (getQuadraCfa()) {
+    if (!isSaneCameraSize(sensor_dim)) {
+        LOGW("Error getting RAW size. Setting to fallback value");
+        if (getQuadraCfa() && isSaneCameraSize(m_pCapability->quadra_cfa_dim[0])) {
             sensor_dim = m_pCapability->quadra_cfa_dim[0];
-        } else {
+        } else if (isSaneCameraSize(m_pCapability->raw_dim[0])) {
             sensor_dim = m_pCapability->raw_dim[0];
+        } else {
+            sensor_dim = max_dim;
         }
     }
     return rc;
@@ -12281,10 +13091,51 @@ int32_t QCameraParameters::commitSetBatch()
 {
     int32_t rc = NO_ERROR;
     int32_t i = 0;
+    int32_t validCount = 0;
+    bool traceBatch = traceBringupParamBatch();
+    bool skipUnsafeSnapshotBatch = false;
+    bool dropSetParmsAfterUnsafeMask = false;
 
     if (NULL == m_pParamBuf) {
         LOGE("Params not initialized");
         return NO_INIT;
+    }
+
+    int32_t hal_version = CAM_HAL_V1;
+    ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf, CAM_INTF_PARM_HAL_VERSION, hal_version);
+
+    skipUnsafeSnapshotBatch = forceBringupSkipUnsafeSnapshotBatch() &&
+            (m_pParamBuf->is_valid[CAM_INTF_PARM_CUSTOM] ||
+             m_pParamBuf->is_valid[NUBIA_13] ||
+             m_pParamBuf->is_valid[CAM_INTF_PARM_ADV_CAPTURE_MODE]);
+    if (skipUnsafeSnapshotBatch) {
+        int32_t maskedCount = 0;
+        LOGW("NX549J bringup: mask unsafe snapshot set_parms batch "
+                "burstLed=%u adv=%u statsDbg=%u paaf=%u jpegOrient=%u "
+                "custom=%u nubia13=%u",
+                m_pParamBuf->is_valid[CAM_INTF_PARM_BURST_LED_ON_PERIOD],
+                m_pParamBuf->is_valid[CAM_INTF_PARM_ADV_CAPTURE_MODE],
+                m_pParamBuf->is_valid[CAM_INTF_PARM_STATS_DEBUG_MASK],
+                m_pParamBuf->is_valid[CAM_INTF_PARM_STATS_AF_PAAF],
+                m_pParamBuf->is_valid[CAM_INTF_META_JPEG_ORIENTATION],
+                m_pParamBuf->is_valid[CAM_INTF_PARM_CUSTOM],
+                m_pParamBuf->is_valid[NUBIA_13]);
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                CAM_INTF_PARM_BURST_LED_ON_PERIOD, "BURST_LED_ON_PERIOD");
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                CAM_INTF_PARM_ADV_CAPTURE_MODE, "ADV_CAPTURE_MODE");
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                CAM_INTF_PARM_STATS_DEBUG_MASK, "STATS_DEBUG_MASK");
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                CAM_INTF_PARM_STATS_AF_PAAF, "STATS_AF_PAAF");
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                CAM_INTF_META_JPEG_ORIENTATION, "JPEG_ORIENTATION");
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                CAM_INTF_PARM_CUSTOM, "CUSTOM");
+        maskedCount += clearBringupUnsafeParam(m_pParamBuf,
+                NUBIA_13, "NUBIA_13");
+        LOGW("NX549J bringup: unsafe snapshot set_parms masked=%d",
+                maskedCount);
     }
 
     /* Loop to check if atleast one entry is valid */
@@ -12293,13 +13144,49 @@ int32_t QCameraParameters::commitSetBatch()
             break;
     }
 
+    if (traceBatch) {
+        for (int32_t j = 0; j < CAM_INTF_PARM_MAX; j++) {
+            if (m_pParamBuf->is_valid[j]) {
+                validCount++;
+                LOGW("NX549J bringup: set_parms batch valid parm id=%d", j);
+            }
+        }
+    }
+
     if (NULL == m_pCamOpsTbl) {
         LOGE("Ops not initialized");
         return NO_INIT;
     }
 
+    if (skipUnsafeSnapshotBatch) {
+        dropSetParmsAfterUnsafeMask = true;
+        for (int32_t j = 0; j < CAM_INTF_PARM_MAX; j++) {
+            if (m_pParamBuf->is_valid[j] &&
+                    j != CAM_INTF_PARM_HAL_VERSION) {
+                dropSetParmsAfterUnsafeMask = false;
+                break;
+            }
+        }
+        if (dropSetParmsAfterUnsafeMask) {
+            LOGW("NX549J bringup: drop unsafe snapshot set_parms after mask; "
+                    "commit local parameter map only");
+        }
+    }
+
     if (i < CAM_INTF_PARM_MAX) {
-        rc = m_pCamOpsTbl->ops->set_parms(m_pCamOpsTbl->camera_handle, m_pParamBuf);
+        if (dropSetParmsAfterUnsafeMask) {
+            rc = NO_ERROR;
+        } else if (traceBatch) {
+            LOGW("NX549J bringup: set_parms commit valid=%d first=%d parm_size=%zu data_off=%zu tune_valid_off=%zu",
+                    validCount, i, sizeof(parm_buffer_t),
+                    offsetof(parm_buffer_t, data),
+                    offsetof(parm_buffer_t, is_tuning_params_valid));
+            rc = m_pCamOpsTbl->ops->set_parms(m_pCamOpsTbl->camera_handle, m_pParamBuf);
+            LOGW("NX549J bringup: set_parms rc=%d valid=%d first=%d",
+                    rc, validCount, i);
+        } else {
+            rc = m_pCamOpsTbl->ops->set_parms(m_pCamOpsTbl->camera_handle, m_pParamBuf);
+        }
     }
     if (rc == NO_ERROR) {
         // commit change from temp storage into param map
@@ -13017,6 +13904,18 @@ int32_t QCameraParameters::updateSnapshotPpMask(cam_stream_size_info_t &stream_c
     int32_t rc = NO_ERROR;
     cam_dimension_t sensor_dim, snap_dim;
     cam_dimension_t max_dim = {0,0};
+    bool has_snapshot = false;
+
+    for (uint32_t j = 0; j < stream_config_info.num_streams; j++) {
+         if (stream_config_info.type[j] == CAM_STREAM_TYPE_SNAPSHOT) {
+             has_snapshot = true;
+         }
+    }
+
+    if (!has_snapshot) {
+         LOGD("skip snapshot pp mask update without snapshot stream");
+         return rc;
+    }
 
     // Find the Maximum dimension among all the streams
     for (uint32_t j = 0; j < stream_config_info.num_streams; j++) {
@@ -13040,16 +13939,13 @@ int32_t QCameraParameters::updateSnapshotPpMask(cam_stream_size_info_t &stream_c
                   stream_config_info.postprocess_mask[k] =
                       mStreamPpMask[CAM_STREAM_TYPE_SNAPSHOT];
                   LOGI("STREAM INFO : type %d, wxh: %d x %d, pp_mask: 0x%llx \
-                        Format = %d, dt =%d cid =%d subformat =%d, is_type %d",
+                        Format = %d, is_type %d",
                         stream_config_info.type[k],
                         stream_config_info.stream_sizes[k].width,
                         stream_config_info.stream_sizes[k].height,
                         stream_config_info.postprocess_mask[k],
                         stream_config_info.format[k],
-                        stream_config_info.dt[k],
-                        stream_config_info.vc[k],
-                        stream_config_info.sub_format_type[k],
-                        stream_config_info.is_type[k]);
+                        stream_config_info.is_type);
                   rc = sendStreamConfigInfo(stream_config_info);
               }
          }
@@ -13117,17 +14013,139 @@ uint8_t QCameraParameters::getMobicatMask()
  *==========================================================================*/
 bool QCameraParameters::sendStreamConfigInfo(cam_stream_size_info_t &stream_config_info) {
     int32_t rc = NO_ERROR;
+    cam_stream_size_info_t merged_stream_config_info;
+    cam_stream_size_info_t *send_config = &stream_config_info;
+    bool snapshotFirst = stream_config_info.num_streams > 0 &&
+            stream_config_info.type[0] == CAM_STREAM_TYPE_SNAPSHOT;
+
+    if (snapshotFirst && nx549jMergeLateSnapshotStreamInfo()) {
+        if (mNx549jHasLastPreviewStreamConfig &&
+                mNx549jLastPreviewStreamConfig.num_streams > 0 &&
+                mNx549jLastPreviewStreamConfig.type[0] !=
+                        CAM_STREAM_TYPE_SNAPSHOT) {
+            memcpy(&merged_stream_config_info, &mNx549jLastPreviewStreamConfig,
+                    sizeof(merged_stream_config_info));
+            for (uint32_t i = 0; i < stream_config_info.num_streams; i++) {
+                bool replaced = false;
+                for (uint32_t j = 0; j < merged_stream_config_info.num_streams;
+                        j++) {
+                    if (merged_stream_config_info.type[j] ==
+                            stream_config_info.type[i]) {
+                        merged_stream_config_info.stream_sizes[j] =
+                                stream_config_info.stream_sizes[i];
+                        merged_stream_config_info.postprocess_mask[j] =
+                                stream_config_info.postprocess_mask[i];
+                        merged_stream_config_info.format[j] =
+                                stream_config_info.format[i];
+                        replaced = true;
+                        LOGW("NX549J bringup: merge late stream info replace "
+                                "type=%d at cached index=%u",
+                                stream_config_info.type[i], j);
+                        break;
+                    }
+                }
+                if (!replaced &&
+                        merged_stream_config_info.num_streams <
+                                MAX_NUM_STREAMS) {
+                    uint32_t dst = merged_stream_config_info.num_streams++;
+                    merged_stream_config_info.type[dst] =
+                            stream_config_info.type[i];
+                    merged_stream_config_info.stream_sizes[dst] =
+                            stream_config_info.stream_sizes[i];
+                    merged_stream_config_info.postprocess_mask[dst] =
+                            stream_config_info.postprocess_mask[i];
+                    merged_stream_config_info.format[dst] =
+                            stream_config_info.format[i];
+                    LOGW("NX549J bringup: merge late stream info append "
+                            "type=%d at cached index=%u",
+                            stream_config_info.type[i], dst);
+                } else if (!replaced) {
+                    LOGE("NX549J bringup: cannot merge late stream type=%d, "
+                            "cached stream table full num=%u",
+                            stream_config_info.type[i],
+                            merged_stream_config_info.num_streams);
+                }
+            }
+            LOGW("NX549J bringup: merged crashy late snapshot STREAM_INFO "
+                    "with cached preview config late_num=%u merged_num=%u",
+                    stream_config_info.num_streams,
+                    merged_stream_config_info.num_streams);
+            send_config = &merged_stream_config_info;
+            snapshotFirst = send_config->num_streams > 0 &&
+                    send_config->type[0] == CAM_STREAM_TYPE_SNAPSHOT;
+        } else {
+            LOGW("NX549J bringup: merge late snapshot STREAM_INFO requested "
+                    "but no safe cached preview config is available has=%d "
+                    "cached_num=%u",
+                    mNx549jHasLastPreviewStreamConfig,
+                    mNx549jLastPreviewStreamConfig.num_streams);
+        }
+    }
+
+    if (forceBringupSkipLateSnapshotStreamInfo() && snapshotFirst) {
+        if (forceBringupPredeclareSnapshotStream()) {
+            LOGW("NX549J bringup: skip late capture STREAM_INFO by "
+                    "persist.camera.force_bringup_skip_late_snapshot_stream_info=1 "
+                    "num=%u first=%d noPostview=%d",
+                    stream_config_info.num_streams,
+                    stream_config_info.type[0],
+                    forceBringupNoPostview());
+            for (uint32_t i = 0; i < stream_config_info.num_streams; i++) {
+                LOGW("NX549J bringup: skipped late stream[%u] type=%d "
+                        "size=%ux%u fmt=%d pp=0x%llx",
+                        i,
+                        stream_config_info.type[i],
+                        stream_config_info.stream_sizes[i].width,
+                        stream_config_info.stream_sizes[i].height,
+                        stream_config_info.format[i],
+                        stream_config_info.postprocess_mask[i]);
+            }
+            return NO_ERROR;
+        }
+        LOGW("NX549J bringup: late snapshot STREAM_INFO skip requested without "
+                "predeclare; sending for safety num=%u",
+                stream_config_info.num_streams);
+    }
+
+    forceBringupScrubStreamConfig(send_config,
+            snapshotFirst ? "snapshot-stream-config" : "stream-config");
+
+    LOGW("NX549J bringup: stream config send num=%u hfr=%d batch=%d align=%d stride=%d scan=%d zsl=%d recHint=%d rdi=%d dual=%d noPp=%d noPostview=%d minFeat=%d",
+            send_config->num_streams,
+            send_config->hfr_mode,
+            send_config->batch_size,
+            send_config->buf_alignment,
+            send_config->min_stride,
+            send_config->min_scanline,
+            isZSLMode(),
+            getRecordingHintValue(),
+            isRdiMode(),
+            m_bDualCameraMode,
+            forceBringupNoPp(),
+            forceBringupNoPostview(),
+            forceBringupMinFeatures());
+    for (uint32_t i = 0; i < send_config->num_streams; i++) {
+        LOGW("NX549J bringup: stream[%u] type=%d size=%ux%u fmt=%d pp=0x%llx",
+                i,
+                send_config->type[i],
+                send_config->stream_sizes[i].width,
+                send_config->stream_sizes[i].height,
+                send_config->format[i],
+                send_config->postprocess_mask[i]);
+    }
+
     if(initBatchUpdate(m_pParamBuf) < 0 ) {
         LOGE("Failed to initialize group update table");
         return BAD_TYPE;
     }
     if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
-            CAM_INTF_META_STREAM_INFO, stream_config_info)) {
+            CAM_INTF_META_STREAM_INFO, *send_config)) {
         LOGE("Failed to update table");
         return BAD_VALUE;
     }
 
     rc = commitSetBatch();
+    LOGW("NX549J bringup: stream config commit rc=%d", rc);
     if (rc != NO_ERROR) {
         LOGE("Failed to set stream info parm");
         return rc;
@@ -13157,6 +14175,9 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
     char value[PROPERTY_VALUE_MAX];
     bool raw_yuv = false;
     bool raw_capture = false;
+    bool disable_callback_stream = false;
+    bool disable_analysis_stream = false;
+    bool enable_analysis_stream = false;
     cam_dimension_t raw_dim;
 
     if ( m_pParamBuf == NULL ) {
@@ -13188,6 +14209,12 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
 
     property_get("persist.camera.raw_yuv", value, "0");
     raw_yuv = atoi(value) > 0 ? true : false;
+    property_get("persist.camera.disable_callback_stream", value, "1");
+    disable_callback_stream = atoi(value) > 0 ? true : false;
+    property_get("persist.camera.disable_analysis_stream", value, "1");
+    disable_analysis_stream = atoi(value) > 0 ? true : false;
+    property_get("persist.camera.enable_analysis_stream", value, "0");
+    enable_analysis_stream = atoi(value) > 0 ? true : false;
 
     if (isZSLMode() && getRecordingHintValue() != true) {
         if (m_bDualCameraMode) {
@@ -13206,16 +14233,20 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                 stream_config_info.format[stream_config_info.num_streams]);
         stream_config_info.num_streams++;
 
-        stream_config_info.type[stream_config_info.num_streams] =
-                CAM_STREAM_TYPE_ANALYSIS;
-        updatePpFeatureMask(CAM_STREAM_TYPE_ANALYSIS);
-        getStreamDimension(CAM_STREAM_TYPE_ANALYSIS,
-                stream_config_info.stream_sizes[stream_config_info.num_streams]);
-        stream_config_info.postprocess_mask[stream_config_info.num_streams] =
-                mStreamPpMask[CAM_STREAM_TYPE_ANALYSIS];
-        getStreamFormat(CAM_STREAM_TYPE_ANALYSIS,
-                stream_config_info.format[stream_config_info.num_streams]);
-        stream_config_info.num_streams++;
+        if (enable_analysis_stream && !disable_analysis_stream) {
+            stream_config_info.type[stream_config_info.num_streams] =
+                    CAM_STREAM_TYPE_ANALYSIS;
+            updatePpFeatureMask(CAM_STREAM_TYPE_ANALYSIS);
+            getStreamDimension(CAM_STREAM_TYPE_ANALYSIS,
+                    stream_config_info.stream_sizes[stream_config_info.num_streams]);
+            stream_config_info.postprocess_mask[stream_config_info.num_streams] =
+                    mStreamPpMask[CAM_STREAM_TYPE_ANALYSIS];
+            getStreamFormat(CAM_STREAM_TYPE_ANALYSIS,
+                    stream_config_info.format[stream_config_info.num_streams]);
+            stream_config_info.num_streams++;
+        } else {
+            LOGW("analysis stream config disabled by persist.camera.disable_analysis_stream");
+        }
 
         stream_config_info.type[stream_config_info.num_streams] =
                 CAM_STREAM_TYPE_SNAPSHOT;
@@ -13228,7 +14259,7 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                 stream_config_info.format[stream_config_info.num_streams]);
         stream_config_info.num_streams++;
 
-        if (isUBWCEnabled() && getRecordingHintValue() != true) {
+        if (!disable_callback_stream && isUBWCEnabled() && getRecordingHintValue() != true) {
             cam_format_t fmt;
             getStreamFormat(CAM_STREAM_TYPE_PREVIEW,fmt);
             if (fmt == CAM_FORMAT_YUV_420_NV12_UBWC) {
@@ -13243,6 +14274,8 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                         stream_config_info.format[stream_config_info.num_streams]);
                 stream_config_info.num_streams++;
             }
+        } else if (disable_callback_stream) {
+            LOGW("callback stream config disabled by persist.camera.disable_callback_stream");
         }
 
     } else if (!isCapture) {
@@ -13250,7 +14283,7 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
             setISType();
             mIsTypeVideo = getVideoISType();
             mIsTypePreview = getPreviewISType();
-            stream_config_info.is_type[stream_config_info.num_streams] = IS_TYPE_NONE;
+            stream_config_info.is_type = IS_TYPE_NONE;
             stream_config_info.type[stream_config_info.num_streams] =
                     CAM_STREAM_TYPE_SNAPSHOT;
             getStreamDimension(CAM_STREAM_TYPE_SNAPSHOT,
@@ -13261,7 +14294,7 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
             getStreamFormat(CAM_STREAM_TYPE_SNAPSHOT,
                         stream_config_info.format[stream_config_info.num_streams]);
             stream_config_info.num_streams++;
-            stream_config_info.is_type[stream_config_info.num_streams] = mIsTypeVideo;
+            stream_config_info.is_type = mIsTypeVideo;
             stream_config_info.type[stream_config_info.num_streams] =
                     CAM_STREAM_TYPE_VIDEO;
             getStreamDimension(CAM_STREAM_TYPE_VIDEO,
@@ -13275,9 +14308,9 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
         }
 
         /* Analysis stream is needed by DCRF regardless of recording hint */
-        if ((getDcrf() == true) ||
+        if (enable_analysis_stream && !disable_analysis_stream && ((getDcrf() == true) ||
                 (getRecordingHintValue() != true) ||
-                (fdModeInVideo())) {
+                (fdModeInVideo()))) {
             stream_config_info.type[stream_config_info.num_streams] =
                     CAM_STREAM_TYPE_ANALYSIS;
             updatePpFeatureMask(CAM_STREAM_TYPE_ANALYSIS);
@@ -13288,21 +14321,81 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
             getStreamFormat(CAM_STREAM_TYPE_ANALYSIS,
                     stream_config_info.format[stream_config_info.num_streams]);
             stream_config_info.num_streams++;
+        } else if (disable_analysis_stream) {
+            LOGW("analysis stream config disabled by persist.camera.disable_analysis_stream");
         }
 
-        stream_config_info.type[stream_config_info.num_streams] =
-                CAM_STREAM_TYPE_PREVIEW;
-        getStreamDimension(CAM_STREAM_TYPE_PREVIEW,
-                stream_config_info.stream_sizes[stream_config_info.num_streams]);
-        updatePpFeatureMask(CAM_STREAM_TYPE_PREVIEW);
-        stream_config_info.postprocess_mask[stream_config_info.num_streams] =
-                mStreamPpMask[CAM_STREAM_TYPE_PREVIEW];
-        getStreamFormat(CAM_STREAM_TYPE_PREVIEW,
-                    stream_config_info.format[stream_config_info.num_streams]);
-        stream_config_info.is_type[stream_config_info.num_streams] = mIsTypePreview;
+        if (isRdiMode()) {
+            LOGW("NX549J bringup: configuring RAW stream for RDI preview path");
+            stream_config_info.type[stream_config_info.num_streams] =
+                    CAM_STREAM_TYPE_RAW;
+            getStreamDimension(CAM_STREAM_TYPE_RAW,
+                    stream_config_info.stream_sizes[stream_config_info.num_streams]);
+            updatePpFeatureMask(CAM_STREAM_TYPE_RAW);
+            stream_config_info.postprocess_mask[stream_config_info.num_streams] =
+                    mStreamPpMask[CAM_STREAM_TYPE_RAW];
+            getStreamFormat(CAM_STREAM_TYPE_RAW,
+                        stream_config_info.format[stream_config_info.num_streams]);
+            stream_config_info.is_type = IS_TYPE_NONE;
+        } else {
+            stream_config_info.type[stream_config_info.num_streams] =
+                    CAM_STREAM_TYPE_PREVIEW;
+            getStreamDimension(CAM_STREAM_TYPE_PREVIEW,
+                    stream_config_info.stream_sizes[stream_config_info.num_streams]);
+            updatePpFeatureMask(CAM_STREAM_TYPE_PREVIEW);
+            stream_config_info.postprocess_mask[stream_config_info.num_streams] =
+                    mStreamPpMask[CAM_STREAM_TYPE_PREVIEW];
+            getStreamFormat(CAM_STREAM_TYPE_PREVIEW,
+                        stream_config_info.format[stream_config_info.num_streams]);
+            stream_config_info.is_type = mIsTypePreview;
+        }
         stream_config_info.num_streams++;
 
-        if (isUBWCEnabled() && getRecordingHintValue() != true) {
+        if (forceBringupPredeclareSnapshotStream() &&
+                !getofflineRAW() &&
+                (isJpegPictureFormat() || isNV16PictureFormat() ||
+                 isNV21PictureFormat())) {
+            LOGW("NX549J bringup: predeclare snapshot stream in preview "
+                    "layout by persist.camera.force_bringup_predeclare_snapshot_stream=1");
+            stream_config_info.type[stream_config_info.num_streams] =
+                    CAM_STREAM_TYPE_SNAPSHOT;
+            getStreamDimension(CAM_STREAM_TYPE_SNAPSHOT,
+                    stream_config_info.stream_sizes[stream_config_info.num_streams]);
+            updatePpFeatureMask(CAM_STREAM_TYPE_SNAPSHOT);
+            stream_config_info.postprocess_mask[stream_config_info.num_streams] =
+                    mStreamPpMask[CAM_STREAM_TYPE_SNAPSHOT];
+            getStreamFormat(CAM_STREAM_TYPE_SNAPSHOT,
+                    stream_config_info.format[stream_config_info.num_streams]);
+            stream_config_info.is_type = IS_TYPE_NONE;
+            stream_config_info.num_streams++;
+
+            if (!getQuadraCfa() && !forceBringupNoPostview()) {
+                if (stream_config_info.num_streams < MAX_NUM_STREAMS) {
+                    LOGW("NX549J bringup: predeclare postview stream in preview "
+                            "layout for capture stream-info skip");
+                    stream_config_info.type[stream_config_info.num_streams] =
+                            CAM_STREAM_TYPE_POSTVIEW;
+                    getStreamDimension(CAM_STREAM_TYPE_POSTVIEW,
+                            stream_config_info.stream_sizes[
+                                    stream_config_info.num_streams]);
+                    updatePpFeatureMask(CAM_STREAM_TYPE_POSTVIEW);
+                    stream_config_info.postprocess_mask[
+                            stream_config_info.num_streams] =
+                            mStreamPpMask[CAM_STREAM_TYPE_POSTVIEW];
+                    getStreamFormat(CAM_STREAM_TYPE_POSTVIEW,
+                            stream_config_info.format[
+                                    stream_config_info.num_streams]);
+                    stream_config_info.is_type = IS_TYPE_NONE;
+                    stream_config_info.num_streams++;
+                } else {
+                    LOGE("NX549J bringup: cannot predeclare postview, "
+                            "stream table full num=%u",
+                            stream_config_info.num_streams);
+                }
+            }
+        }
+
+        if (!disable_callback_stream && isUBWCEnabled() && getRecordingHintValue() != true) {
             cam_format_t fmt;
             getStreamFormat(CAM_STREAM_TYPE_PREVIEW,fmt);
             if (fmt == CAM_FORMAT_YUV_420_NV12_UBWC) {
@@ -13315,9 +14408,11 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                         mStreamPpMask[CAM_STREAM_TYPE_CALLBACK];
                 getStreamFormat(CAM_STREAM_TYPE_CALLBACK,
                         stream_config_info.format[stream_config_info.num_streams]);
-                stream_config_info.is_type[stream_config_info.num_streams] = IS_TYPE_NONE;
+                stream_config_info.is_type = IS_TYPE_NONE;
                 stream_config_info.num_streams++;
             }
+        } else if (disable_callback_stream) {
+            LOGW("callback stream config disabled by persist.camera.disable_callback_stream");
         }
 
     } else {
@@ -13332,7 +14427,7 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                         mStreamPpMask[CAM_STREAM_TYPE_SNAPSHOT];
                 getStreamFormat(CAM_STREAM_TYPE_SNAPSHOT,
                         stream_config_info.format[stream_config_info.num_streams]);
-                stream_config_info.is_type[stream_config_info.num_streams] = IS_TYPE_NONE;
+                stream_config_info.is_type = IS_TYPE_NONE;
                 stream_config_info.num_streams++;
             }
 
@@ -13346,8 +14441,11 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                         mStreamPpMask[CAM_STREAM_TYPE_PREVIEW];
                 getStreamFormat(CAM_STREAM_TYPE_PREVIEW,
                         stream_config_info.format[stream_config_info.num_streams]);
-                stream_config_info.is_type[stream_config_info.num_streams] = IS_TYPE_NONE;
+                stream_config_info.is_type = IS_TYPE_NONE;
                 stream_config_info.num_streams++;
+            } else if (!getQuadraCfa() && forceBringupNoPostview()) {
+                LOGW("NX549J bringup: skip postview stream config by "
+                        "persist.camera.force_bringup_no_postview=1");
             } else if(!getQuadraCfa()) {
                 stream_config_info.type[stream_config_info.num_streams] =
                         CAM_STREAM_TYPE_POSTVIEW;
@@ -13358,7 +14456,7 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                         mStreamPpMask[CAM_STREAM_TYPE_POSTVIEW];
                 getStreamFormat(CAM_STREAM_TYPE_POSTVIEW,
                         stream_config_info.format[stream_config_info.num_streams]);
-                stream_config_info.is_type[stream_config_info.num_streams] = IS_TYPE_NONE;
+                stream_config_info.is_type = IS_TYPE_NONE;
                 stream_config_info.num_streams++;
             }
         } else {
@@ -13372,7 +14470,7 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                     mStreamPpMask[CAM_STREAM_TYPE_RAW];
             getStreamFormat(CAM_STREAM_TYPE_RAW,
                     stream_config_info.format[stream_config_info.num_streams]);
-            stream_config_info.is_type[stream_config_info.num_streams] = IS_TYPE_NONE;
+            stream_config_info.is_type = IS_TYPE_NONE;
             stream_config_info.num_streams++;
         }
     }
@@ -13402,27 +14500,9 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                 stream_config_info.format[stream_config_info.num_streams]);
         if (CAM_FORMAT_META_RAW_10BIT ==
             stream_config_info.format[stream_config_info.num_streams]) {
-            int32_t dt = 0;
-            int32_t vc = 0;
-            cam_stream_size_info_t temp_stream_config_info;
-            getStreamSubFormat(CAM_STREAM_TYPE_RAW,
-                stream_config_info.sub_format_type[
-                stream_config_info.num_streams]);
-            /* Sending separate meta_stream_info so that other modules do
-             * not confuse with original sendStreamConfigInfo(). This is only
-             * for sensor where sensor can run pick resolusion for meta raw.
-             */
-            updateDtVc(&dt, &vc);
-            stream_config_info.dt[stream_config_info.num_streams] = dt;
-            stream_config_info.vc[stream_config_info.num_streams] = vc;
-            memcpy(&temp_stream_config_info, &stream_config_info,
-                sizeof(temp_stream_config_info));
-            temp_stream_config_info.num_streams++;
-            sendStreamConfigForPickRes(temp_stream_config_info);
-            getMetaRawInfo();
-        } else {
-            updateRAW(max_dim);
+            LOGW("meta raw pick-resolution fields are not part of the NX549J camera daemon ABI");
         }
+        updateRAW(max_dim);
         getStreamDimension(CAM_STREAM_TYPE_RAW, stream_config_info.stream_sizes[
                 stream_config_info.num_streams]);
         updatePpFeatureMask(CAM_STREAM_TYPE_RAW);
@@ -13433,22 +14513,34 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
 
     for (uint32_t k = 0; k < stream_config_info.num_streams; k++) {
         LOGI("STREAM INFO : type %d, wxh: %d x %d, pp_mask: 0x%llx \
-                Format = %d, dt =%d cid =%d subformat =%d, is_type %d",
+                Format = %d, is_type %d",
                 stream_config_info.type[k],
                 stream_config_info.stream_sizes[k].width,
                 stream_config_info.stream_sizes[k].height,
                 stream_config_info.postprocess_mask[k],
                 stream_config_info.format[k],
-                stream_config_info.dt[k],
-                stream_config_info.vc[k],
-                stream_config_info.sub_format_type[k],
-                stream_config_info.is_type[k]);
+                stream_config_info.is_type);
     }
-    if (m_bMainCamera && m_bDualCameraMode){
-        stream_config_info.sync_type = CAM_TYPE_MAIN;
-    } else if (m_bDualCameraMode){
-        stream_config_info.sync_type = CAM_TYPE_AUX;
+
+    if (!isCapture && !resetConfig && stream_config_info.num_streams > 0 &&
+            stream_config_info.type[0] != CAM_STREAM_TYPE_SNAPSHOT) {
+        bool hasPreview = false;
+        bool hasSnapshot = false;
+        for (uint32_t k = 0; k < stream_config_info.num_streams; k++) {
+            hasPreview |= stream_config_info.type[k] == CAM_STREAM_TYPE_PREVIEW;
+            hasSnapshot |= stream_config_info.type[k] ==
+                    CAM_STREAM_TYPE_SNAPSHOT;
+        }
+        if (hasPreview) {
+            memcpy(&mNx549jLastPreviewStreamConfig, &stream_config_info,
+                    sizeof(mNx549jLastPreviewStreamConfig));
+            mNx549jHasLastPreviewStreamConfig = true;
+            LOGW("NX549J bringup: cache preview stream config num=%u "
+                    "hasSnapshot=%d for late snapshot merge",
+                    stream_config_info.num_streams, hasSnapshot);
+        }
     }
+
     rc = sendStreamConfigInfo(stream_config_info);
     if (m_bDualCameraMode) {
         if (m_pRelCamSyncHeap == NULL) {
@@ -13505,7 +14597,6 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
             return rc;
         }
     }
-    updateSnapshotPpMask(stream_config_info);
     return rc;
 }
 
@@ -13529,6 +14620,14 @@ int32_t QCameraParameters::addOnlineRotation(uint32_t rotation, uint32_t streamI
     int32_t rc = NO_ERROR;
     cam_rotation_info_t rotation_info;
     memset(&rotation_info, 0, sizeof(cam_rotation_info_t));
+
+    if (forceBringupSkipOnlineRotation()) {
+        LOGW("NX549J bringup: skip online rotation set_parms by "
+                "persist.camera.force_bringup_skip_online_rotation=1 "
+                "rotation=%u streamId=%u device_rotation=%d",
+                rotation, streamId, device_rotation);
+        return NO_ERROR;
+    }
 
     /* Add jpeg rotation information */
     if (rotation == 0) {
@@ -13824,6 +14923,12 @@ bool QCameraParameters::isPreviewSeeMoreRequired()
  *==========================================================================*/
 int32_t QCameraParameters::updateDebugLevel()
 {
+    if (forceBringupSkipUpdateDebugLevel()) {
+        LOGW("NX549J bringup: skip debug-level set_parms by "
+                "persist.camera.force_bringup_skip_update_debug_level=1");
+        return NO_ERROR;
+    }
+
     if ( m_pParamBuf == NULL ) {
         return NO_INIT;
     }
@@ -13955,7 +15060,10 @@ int32_t QCameraParameters::updatePpFeatureMask(cam_stream_type_t stream_type) {
         feature_mask |= CAM_QCOM_FEATURE_EZTUNE;
     }
 
-    if ((getCDSMode() != CAM_CDS_MODE_OFF) &&
+    if (forceBringupNoCppCds()) {
+        LOGW("NX549J bringup: mask CPP CDS/DSDN for stream type %d pp_mask=0x%llx",
+                stream_type, feature_mask);
+    } else if ((getCDSMode() != CAM_CDS_MODE_OFF) &&
             ((CAM_STREAM_TYPE_PREVIEW == stream_type) ||
             (CAM_STREAM_TYPE_VIDEO == stream_type) ||
             (CAM_STREAM_TYPE_CALLBACK == stream_type) ||
@@ -14046,6 +15154,13 @@ int32_t QCameraParameters::updatePpFeatureMask(cam_stream_type_t stream_type) {
             (stream_type == CAM_STREAM_TYPE_SNAPSHOT)){
         feature_mask |= CAM_QTI_FEATURE_RTB;
     }
+    if (forceBringupNoPp() &&
+            forceBringupNoPpStreamType(stream_type)) {
+        LOGW("NX549J bringup: forcing stream type %d pp_mask 0x%llx -> 0",
+                stream_type, feature_mask);
+        feature_mask = CAM_QCOM_FEATURE_NONE;
+    }
+
     // Store stream feature mask
     setStreamPpMask(stream_type, feature_mask);
     LOGH("stream type: %d, pp_mask: 0x%llx", stream_type, feature_mask);
@@ -14643,6 +15758,14 @@ uint8_t QCameraParameters::getLongshotStages()
  *==========================================================================*/
 int32_t QCameraParameters::setCDSMode(int32_t cds_mode, bool initCommit)
 {
+    if (forceBringupNoCppCds()) {
+        updateParamEntry(KEY_QC_CDS_MODE, CDS_MODE_OFF);
+        updateParamEntry(KEY_QC_VIDEO_CDS_MODE, CDS_MODE_OFF);
+        mCds_mode = CAM_CDS_MODE_OFF;
+        LOGW("NX549J bringup: skip CDS set-param while CPP CDS/DSDN is masked");
+        return NO_ERROR;
+    }
+
     if (initCommit) {
         if (initBatchUpdate(m_pParamBuf) < 0) {
             LOGE("Failed to initialize group update table");
@@ -14921,7 +16044,7 @@ bool QCameraParameters::getDualCameraMode()
             updateParamEntry(KEY_QC_LED_CALIBRATION_MODES, calibModeStr);
 
             if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
-                    CAM_INTF_PARM_LED_CALIBRATION, m_ledCalibrationMode)) {
+                    CAM_INTF_PARM_DUAL_LED_CALIBRATION, m_ledCalibrationMode)) {
                 LOGE("Failed to update led calibration param");
                 return BAD_VALUE;
             }
@@ -15047,21 +16170,9 @@ int32_t QCameraParameters::getMetaRawInfo()
         return BAD_TYPE;
     }
 
-    ADD_GET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
-            CAM_INTF_META_RAW);
-
-    rc = commitGetBatch();
-    if (rc != NO_ERROR) {
-        LOGE("Failed to get extened RAW info");
-        return rc;
-    }
-
-    READ_PARAM_ENTRY(m_pParamBuf,
-            CAM_INTF_META_RAW, meta_stream_size);
-
+    meta_stream_size = m_pCapability->raw_meta_dim[0];
     if (meta_stream_size.width == 0 || meta_stream_size.height == 0) {
-        LOGE("Error getting RAW size. Setting to Capability value");
-        meta_stream_size = m_pCapability->raw_meta_dim[0];
+        meta_stream_size = m_rawSize;
     }
     LOGH("RAW meta size. width =%d height =%d",
       meta_stream_size.width, meta_stream_size.height);
@@ -15089,17 +16200,7 @@ bool QCameraParameters::sendStreamConfigForPickRes
         return BAD_TYPE;
     }
 
-    if (ADD_SET_PARAM_ENTRY_TO_BATCH(m_pParamBuf,
-            CAM_INTF_META_STREAM_INFO_FOR_PIC_RES, stream_config_info)) {
-        LOGE("%s:Failed to update table");
-        return BAD_VALUE;
-    }
-
-    rc = commitSetBatch();
-    if (rc != NO_ERROR) {
-        LOGE("Failed to set stream info parm");
-        return rc;
-    }
+    LOGW("pick-resolution stream info is not part of the NX549J camera daemon ABI");
     return rc;
 }
 

@@ -795,7 +795,13 @@ int32_t mm_camera_prepare_snapshot(mm_camera_obj_t *my_obj,
 {
     int32_t rc = -1;
     int32_t value = do_af_flag;
+    LOGE("NX549J camera superdiag: prepare_snapshot session=%d do_af=%d",
+            my_obj->sessionid,
+            do_af_flag);
     rc = mm_camera_util_s_ctrl(my_obj, 0, my_obj->ctrl_fd, CAM_PRIV_PREPARE_SNAPSHOT, &value);
+    LOGE("NX549J camera superdiag: prepare_snapshot done session=%d rc=%d",
+            my_obj->sessionid,
+            rc);
     pthread_mutex_unlock(&my_obj->cam_lock);
     return rc;
 }
@@ -817,8 +823,13 @@ int32_t mm_camera_start_zsl_snapshot(mm_camera_obj_t *my_obj)
     int32_t rc = -1;
     int32_t value = 0;
 
+    LOGE("NX549J camera superdiag: start_zsl_snapshot session=%d",
+            my_obj->sessionid);
     rc = mm_camera_util_s_ctrl(my_obj, 0, my_obj->ctrl_fd,
              CAM_PRIV_START_ZSL_SNAPSHOT, &value);
+    LOGE("NX549J camera superdiag: start_zsl_snapshot done session=%d rc=%d",
+            my_obj->sessionid,
+            rc);
     return rc;
 }
 
@@ -1133,6 +1144,11 @@ int32_t mm_camera_start_zsl_snapshot_ch(mm_camera_obj_t *my_obj,
         mm_camera_util_get_channel_by_handler(my_obj, ch_id);
 
     if (NULL != ch_obj) {
+        LOGE("NX549J camera superdiag: start_zsl_snapshot_ch session=%d "
+                "ch=0x%x state=%d",
+                my_obj->sessionid,
+                ch_id,
+                ch_obj->state);
         pthread_mutex_lock(&ch_obj->ch_lock);
         pthread_mutex_unlock(&my_obj->cam_lock);
 
@@ -1140,7 +1156,17 @@ int32_t mm_camera_start_zsl_snapshot_ch(mm_camera_obj_t *my_obj,
                                MM_CHANNEL_EVT_START_ZSL_SNAPSHOT,
                                NULL,
                                NULL);
+        LOGE("NX549J camera superdiag: start_zsl_snapshot_ch done session=%d "
+                "ch=0x%x rc=%d state=%d",
+                my_obj->sessionid,
+                ch_id,
+                rc,
+                ch_obj->state);
     } else {
+        LOGE("NX549J camera superdiag: start_zsl_snapshot_ch missing channel "
+                "session=%d ch=0x%x",
+                my_obj->sessionid,
+                ch_id);
         pthread_mutex_unlock(&my_obj->cam_lock);
     }
 
@@ -1245,6 +1271,11 @@ int32_t mm_camera_start_channel(mm_camera_obj_t *my_obj, uint32_t ch_id)
         mm_camera_util_get_channel_by_handler(my_obj, ch_id);
 
     if (NULL != ch_obj) {
+        LOGE("NX549J camera streamdiag: camera_start_channel begin "
+                "session=%d ch=0x%x state=%d",
+                my_obj->sessionid,
+                ch_id,
+                ch_obj->state);
         pthread_mutex_lock(&ch_obj->ch_lock);
         pthread_mutex_unlock(&my_obj->cam_lock);
 
@@ -1252,7 +1283,17 @@ int32_t mm_camera_start_channel(mm_camera_obj_t *my_obj, uint32_t ch_id)
                                MM_CHANNEL_EVT_START,
                                NULL,
                                NULL);
+        LOGE("NX549J camera streamdiag: camera_start_channel done "
+                "session=%d ch=0x%x rc=%d state=%d",
+                my_obj->sessionid,
+                ch_id,
+                rc,
+                ch_obj->state);
     } else {
+        LOGE("NX549J camera streamdiag: camera_start_channel missing channel "
+                "session=%d ch=0x%x",
+                my_obj->sessionid,
+                ch_id);
         pthread_mutex_unlock(&my_obj->cam_lock);
     }
 
@@ -1316,12 +1357,31 @@ int32_t mm_camera_request_super_buf(mm_camera_obj_t *my_obj,
         mm_camera_util_get_channel_by_handler(my_obj, ch_id);
 
     if ((NULL != ch_obj) && (buf != NULL)) {
+        LOGE("NX549J camera superdiag: camera_request_super_buf session=%d "
+                "ch=0x%x type=%d num=%u retro=%u primary=%u",
+                my_obj->sessionid,
+                ch_id,
+                buf->type,
+                buf->num_buf_requested,
+                buf->num_retro_buf_requested,
+                buf->primary_only);
         pthread_mutex_lock(&ch_obj->ch_lock);
         pthread_mutex_unlock(&my_obj->cam_lock);
 
         rc = mm_channel_fsm_fn(ch_obj, MM_CHANNEL_EVT_REQUEST_SUPER_BUF,
                 (void *)buf, NULL);
+        LOGE("NX549J camera superdiag: camera_request_super_buf done "
+                "session=%d ch=0x%x rc=%d state=%d",
+                my_obj->sessionid,
+                ch_id,
+                rc,
+                ch_obj->state);
     } else {
+        LOGE("NX549J camera superdiag: camera_request_super_buf missing "
+                "session=%d ch=0x%x buf=%p",
+                my_obj->sessionid,
+                ch_id,
+                (void *)buf);
         pthread_mutex_unlock(&my_obj->cam_lock);
     }
 
@@ -1632,6 +1692,11 @@ int32_t mm_camera_map_stream_buf(mm_camera_obj_t *my_obj,
         payload.fd = fd;
         payload.size = size;
         payload.buffer = buffer;
+        ALOGE("NX549J camera mapdiag: camera map_stream_buf session=%u "
+                "ch=0x%x stream=0x%x type=%u frame=%u plane=%d fd=%d "
+                "size=%zu buffer=%p entry_size=%zu",
+                my_obj->sessionid, ch_id, stream_id, buf_type, buf_idx,
+                plane_idx, fd, size, buffer, sizeof(cam_buf_map_type));
         rc = mm_channel_fsm_fn(ch_obj,
                                MM_CHANNEL_EVT_MAP_STREAM_BUF,
                                (void*)&payload,
@@ -1935,8 +2000,10 @@ int32_t mm_camera_map_buf(mm_camera_obj_t *my_obj,
     packet.payload.buf_map.fd = fd;
     packet.payload.buf_map.size = size;
     packet.payload.buf_map.buffer = buffer;
-    ALOGE("NX549J camera mapdiag: send map_buf session=%u type=%u fd=%d size=%zu buffer=%p",
-            my_obj->sessionid, buf_type, fd, size, buffer);
+    ALOGE("NX549J camera mapdiag: send map_buf session=%u type=%u "
+            "fd=%d size=%zu buffer=%p entry_size=%zu packet_size=%zu",
+            my_obj->sessionid, buf_type, fd, size, buffer,
+            sizeof(cam_buf_map_type), sizeof(cam_sock_packet_t));
 #ifdef DAEMON_PRESENT
     rc = mm_camera_util_sendmsg(my_obj,
                                 &packet,
@@ -1982,9 +2049,9 @@ int32_t mm_camera_map_bufs(mm_camera_obj_t *my_obj,
     uint32_t i;
     for (i = 0; i < numbufs; i++) {
         sendfds[i] = packet.payload.buf_map_list.buf_maps[i].fd;
-        packet.payload.buf_map_list.buf_maps[i].buffer =
-                buf_map_list->buf_maps[i].buffer;
-        ALOGE("NX549J camera mapdiag: send map_bufs session=%u item=%u/%u type=%u stream=%u frame=%u plane=%d cookie=%u fd=%d size=%zu buffer=%p",
+        ALOGE("NX549J camera mapdiag: send map_bufs session=%u item=%u/%u "
+                "type=%u stream=%u frame=%u plane=%d cookie=%u fd=%d "
+                "size=%zu buffer=%p entry_size=%zu packet_size=%zu",
                 my_obj->sessionid, i, numbufs,
                 packet.payload.buf_map_list.buf_maps[i].type,
                 packet.payload.buf_map_list.buf_maps[i].stream_id,
@@ -1993,7 +2060,8 @@ int32_t mm_camera_map_bufs(mm_camera_obj_t *my_obj,
                 packet.payload.buf_map_list.buf_maps[i].cookie,
                 packet.payload.buf_map_list.buf_maps[i].fd,
                 packet.payload.buf_map_list.buf_maps[i].size,
-                packet.payload.buf_map_list.buf_maps[i].buffer);
+                packet.payload.buf_map_list.buf_maps[i].buffer,
+                sizeof(cam_buf_map_type), sizeof(cam_sock_packet_t));
     }
     for (i = numbufs; i < CAM_MAX_NUM_BUFS_PER_STREAM; i++) {
         packet.payload.buf_map_list.buf_maps[i].fd = -1;

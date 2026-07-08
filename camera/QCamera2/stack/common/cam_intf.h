@@ -91,12 +91,9 @@ typedef struct {
        backend */
     uint32_t related_sensor_session_id;
     uint8_t is_frame_sync_enabled;
-    volatile char xiaomi_reserved[12];
 }cam_sync_related_sensors_event_info_t;
 
 /* Related camera sensor specific calibration data */
-// Align bytes according to API document.
-#pragma pack(2)
 typedef struct {
     /* Focal length in pixels @ calibration resolution.*/
     float       normalized_focal_length;
@@ -111,15 +108,12 @@ typedef struct {
     /* Focal length ratio @ Calibration */
     float       focal_length_ratio;
 }cam_related_sensor_calibration_data_t;
-#pragma pack()
 
 /* Related Camera System Calibration data
    Calibration data for the entire related cam sub-system is
    in a shared EEPROM. We have 2 fields which are specific to
    each sensor followed by a set of common calibration of the
    entire related cam system*/
-// Align bytes according to API document.
-#pragma pack(2)
 typedef struct {
     /* Version information */
     uint32_t    calibration_format_version;
@@ -148,24 +142,8 @@ typedef struct {
     uint16_t   module_orientation_during_calibration;
     /* cal images required rotation: 0-no, 1-90 degrees right, 2-90 degrees left */
     uint16_t   rotation_flag;
-    /* AEC sync OTP data */
-    /* AEC sync brightness ration. Fixed Point Q10*/
-    int16_t    brightness_ratio;
-    /* Reference mono gain value obtained from setup stage and used during calibration stage */
-    /* Fixed Point Q10 */
-    int16_t    ref_mono_gain;
-    /* Reference mono line count obtained from setup stage and used during calibration stage */
-    uint16_t   ref_mono_linecount;
-    /* Reference bayer gain value obtained from setup stage and used during calibration stage */
-    /* Fixed Point Q10 */
-    int16_t    ref_bayer_gain;
-    /* Reference bayer line count obtained from setup stage and used during calibration stage */
-    uint16_t   ref_bayer_linecount;
-    /* Reference bayer color temperature */
-    uint16_t   ref_bayer_color_temperature;
     /* Reserved for future use */
     float      reserved[RELCAM_CALIB_RESERVED_MAX];
-    volatile char xiaomi_reserved[2052];
 } cam_related_system_calibration_data_t;
 
 typedef struct {
@@ -173,7 +151,6 @@ typedef struct {
     int data_len;
     cam_related_system_calibration_data_t otp_data;
 } cam_otp_data_t;
-#pragma pack()
 
 typedef struct {
   uint32_t default_sensor_flip;
@@ -272,8 +249,6 @@ typedef struct{
     float hor_view_angle;                                   /* horizontal view angle */
     float ver_view_angle;                                   /* vertical view angle */
 
-    volatile char         xiaomi_reserved1[4];
-
     size_t preview_sizes_tbl_cnt;                           /* preview sizes table size */
     cam_dimension_t preview_sizes_tbl[MAX_SIZES_CNT];       /* preiew sizes table */
 
@@ -292,11 +267,6 @@ typedef struct{
 
     size_t zzhdr_sizes_tbl_cnt;                             /* Number of resolutions in zzHDR mode*/
     cam_dimension_t zzhdr_sizes_tbl[MAX_SIZES_CNT];         /* Table for ZZHDR supported sizes */
-
-    size_t supported_quadra_cfa_dim_cnt;              /* Number of resolutions in Quadra CFA mode */
-    cam_dimension_t quadra_cfa_dim[MAX_SIZES_CNT];    /* Table for Quadra CFA supported sizes */
-    cam_format_t quadra_cfa_format;                   /* Quadra CFA output format */
-    uint32_t is_remosaic_lib_present;                 /* Flag indicating if remosaic lib present */
 
     /* supported preview formats */
     size_t supported_preview_fmt_cnt;
@@ -453,9 +423,6 @@ typedef struct{
     cam_sensitivity_range_t sensitivity_range;
     int32_t max_analog_sensitivity;
 
-    /* ISP digital gain */
-    cam_sensitivity_range_t isp_sensitivity_range;
-
     /* picture sizes need scale*/
     cam_scene_mode_overrides_t scene_mode_overrides[CAM_SCENE_MODE_MAX];
     size_t scale_picture_sizes_cnt;
@@ -514,11 +481,6 @@ typedef struct{
     /* Max size supported by ISP viewfinder path */
     cam_dimension_t max_viewfinder_size;
 
-    /* Max size supported by ISP encoder path */
-    cam_dimension_t max_encoder_size;
-
-    cam_dimension_t bokeh_snapshot_size;
-
     /* Analysis buffer requirements */
     cam_analysis_info_t analysis_info[CAM_ANALYSIS_INFO_MAX];
 
@@ -562,10 +524,18 @@ typedef struct{
     size_t supported_instant_aec_modes_cnt;
     cam_aec_convergence_type supported_instant_aec_modes[CAM_AEC_CONVERGENCE_MAX];
 
-    /* Dual cam calibration data */
-    cam_related_system_calibration_data_t related_cam_calibration;
+    volatile char nubia_reserved1[8304];
 
-    /* Meta_RAW capability */
+    /* Android 11 HAL compatibility fields. Stock NX549J blobs do not fill
+     * these, so keep them after the stock capability payload. */
+    cam_sensitivity_range_t isp_sensitivity_range;
+    cam_dimension_t max_encoder_size;
+    cam_dimension_t bokeh_snapshot_size;
+    size_t supported_quadra_cfa_dim_cnt;
+    cam_dimension_t quadra_cfa_dim[MAX_SIZES_CNT];
+    cam_format_t quadra_cfa_format;
+    uint32_t is_remosaic_lib_present;
+    cam_related_system_calibration_data_t related_cam_calibration;
     uint8_t meta_raw_channel_count;
     uint8_t vc[MAX_SIZES_CNT];
     uint8_t dt[MAX_SIZES_CNT];
@@ -595,12 +565,10 @@ typedef struct {
     uint32_t meta_stream_handle;  /* meta data stream ID. only valid if meta_present != 0 */
     uint32_t meta_buf_index;      /* buf index to meta data buffer. only valid if meta_present != 0 */
 
-    uint8_t is_offline_meta_bypass;
 
     /* opaque metadata required for reprocessing */
     int32_t private_data[MAX_METADATA_PRIVATE_PAYLOAD_SIZE_IN_BYTES];
     cam_rect_t crop_rect;
-    uint8_t is_uv_subsampled;
 } cam_reprocess_param;
 
 typedef struct {
@@ -687,15 +655,6 @@ typedef struct {
 
     /* if frames will not be received */
     uint8_t noFrameExpected;
-
-    /* DT for this stream */
-    int32_t dt;
-
-    /* VC for this stream */
-    int32_t vc;
-
-   /* Subformat for this stream */
-    cam_sub_format_type_t sub_format_type;
 
 } cam_stream_info_t;
 
@@ -822,11 +781,10 @@ typedef struct {
     INCLUDE(CAM_INTF_META_CHROMATIX_LITE_ASD,           cam_chromatix_lite_asd_stats_t, 1);
     INCLUDE(CAM_INTF_BUF_DIVERT_INFO,                   cam_buf_divert_info_t,          1);
 
-    INCLUDE(XIAOMI_02,                                  uint16_t,                    2);
     /* Specific to HAL3 */
     INCLUDE(CAM_INTF_META_FRAME_NUMBER_VALID,           int32_t,                     1);
     INCLUDE(CAM_INTF_META_URGENT_FRAME_NUMBER_VALID,    int32_t,                     1);
-    INCLUDE(CAM_INTF_META_FRAME_DROPPED,                cam_stream_ID_t,             1);
+    INCLUDE(CAM_INTF_META_FRAME_DROPPED,                cam_frame_dropped_t,         1);
     INCLUDE(CAM_INTF_META_FRAME_NUMBER,                 uint32_t,                    1);
     INCLUDE(CAM_INTF_META_URGENT_FRAME_NUMBER,          uint32_t,                    1);
     INCLUDE(CAM_INTF_META_COLOR_CORRECT_MODE,           uint32_t,                    1);
@@ -855,8 +813,6 @@ typedef struct {
     INCLUDE(CAM_INTF_META_LENS_FILTERDENSITY,           float,                       1);
     INCLUDE(CAM_INTF_META_LENS_FOCAL_LENGTH,            float,                       1);
     INCLUDE(CAM_INTF_META_LENS_FOCUS_DISTANCE,          float,                       1);
-    INCLUDE(CAM_INTF_META_FOCUS_VALUE,                  float,                       1);
-    INCLUDE(CAM_INTF_META_SPOT_LIGHT_DETECT,            uint8_t,                     1);
     INCLUDE(CAM_INTF_META_LENS_FOCUS_RANGE,             float,                       2);
     INCLUDE(CAM_INTF_META_LENS_STATE,                   cam_af_lens_state_t,         1);
     INCLUDE(CAM_INTF_META_LENS_OPT_STAB_MODE,           uint32_t,                    1);
@@ -869,7 +825,6 @@ typedef struct {
     INCLUDE(CAM_INTF_META_SENSOR_EXPOSURE_TIME,         int64_t,                     1);
     INCLUDE(CAM_INTF_META_SENSOR_FRAME_DURATION,        int64_t,                     1);
     INCLUDE(CAM_INTF_META_SENSOR_SENSITIVITY,           int32_t,                     1);
-    INCLUDE(CAM_INTF_META_ISP_SENSITIVITY ,             int32_t,                     1);
     INCLUDE(CAM_INTF_META_SENSOR_TIMESTAMP,             int64_t,                     1);
     INCLUDE(CAM_INTF_META_SENSOR_ROLLING_SHUTTER_SKEW,  int64_t,                     1);
     INCLUDE(CAM_INTF_META_SHADING_MODE,                 uint32_t,                    1);
@@ -885,11 +840,7 @@ typedef struct {
     INCLUDE(CAM_INTF_META_EXIF_DEBUG_AWB,               cam_awb_exif_debug_t,        1);
     INCLUDE(CAM_INTF_META_EXIF_DEBUG_AF,                cam_af_exif_debug_t,         1);
     INCLUDE(CAM_INTF_META_EXIF_DEBUG_ASD,               cam_asd_exif_debug_t,        1);
-    INCLUDE(CAM_INTF_META_EXIF_DEBUG_STATS,             cam_stats_buffer_exif_debug_t,   1);
-    INCLUDE(CAM_INTF_META_EXIF_DEBUG_BESTATS,           cam_bestats_buffer_exif_debug_t, 1);
-    INCLUDE(CAM_INTF_META_EXIF_DEBUG_BHIST,             cam_bhist_buffer_exif_debug_t,   1);
-    INCLUDE(CAM_INTF_META_EXIF_DEBUG_3A_TUNING,         cam_q3a_tuning_info_t,       1);
-    INCLUDE(CAM_INTF_META_ASD_SCENE_CAPTURE_TYPE,       cam_auto_scene_t,            1);
+    INCLUDE(CAM_INTF_META_EXIF_DEBUG_STATS,             cam_stats_buffer_exif_debug_t, 1);
     INCLUDE(CAM_INTF_PARM_EFFECT,                       uint32_t,                    1);
     /* Defining as int32_t so that this array is 4 byte aligned */
     INCLUDE(CAM_INTF_META_PRIVATE_DATA,                 int32_t,
@@ -911,7 +862,6 @@ typedef struct {
 
     /* dual camera specific params */
     INCLUDE(CAM_INTF_PARM_RELATED_SENSORS_CALIBRATION,  cam_related_system_calibration_data_t, 1);
-    INCLUDE(XIAOMI_01,                                  uint32_t,                    8);
     INCLUDE(CAM_INTF_META_AF_FOCAL_LENGTH_RATIO,        cam_focal_length_ratio_t, 1);
     INCLUDE(CAM_INTF_META_SNAP_CROP_INFO_SENSOR,        cam_stream_crop_info_t,   1);
     INCLUDE(CAM_INTF_META_SNAP_CROP_INFO_CAMIF,         cam_stream_crop_info_t,   1);
@@ -971,12 +921,8 @@ typedef struct {
     INCLUDE(CAM_INTF_PARM_LONGSHOT_ENABLE,              int8_t,                      1);
     INCLUDE(CAM_INTF_PARM_TONE_MAP_MODE,                uint32_t,                    1);
     INCLUDE(CAM_INTF_META_TOUCH_AE_RESULT,              int32_t,                     1);
-    INCLUDE(CAM_INTF_PARM_LED_CALIBRATION,              cam_led_calibration_mode_t,  1);
+    INCLUDE(CAM_INTF_PARM_DUAL_LED_CALIBRATION,         int32_t,                     1);
     INCLUDE(CAM_INTF_PARM_ADV_CAPTURE_MODE,             uint8_t,                     1);
-    INCLUDE(CAM_INTF_PARM_QUADRA_CFA,                   int32_t,                     1);
-    INCLUDE(CAM_INTF_META_RAW,                          cam_dimension_t,             1);
-    INCLUDE(CAM_INTF_META_STREAM_INFO_FOR_PIC_RES,      cam_stream_size_info_t,      1);
-
 
     /* HAL3 specific */
     INCLUDE(CAM_INTF_META_STREAM_INFO,                  cam_stream_size_info_t,      1);
@@ -1027,13 +973,41 @@ typedef struct {
     INCLUDE(CAM_INTF_AF_STATE_TRANSITION,               uint8_t,                     1);
     INCLUDE(CAM_INTF_PARM_INITIAL_EXPOSURE_INDEX,       uint32_t,                    1);
     INCLUDE(CAM_INTF_PARM_INSTANT_AEC,                  uint8_t,                     1);
-    INCLUDE(CAM_INTF_META_REPROCESS_FLAGS,              uint8_t,                     1);
-    INCLUDE(CAM_INTF_PARM_JPEG_ENCODE_CROP,             cam_stream_crop_info_t,      1);
-    INCLUDE(CAM_INTF_PARM_JPEG_SCALE_DIMENSION,         cam_dimension_t,             1);
-    INCLUDE(CAM_INTF_META_FOCUS_DEPTH_INFO,             uint8_t,                     1);
-    INCLUDE(CAM_INTF_PARM_HAL_BRACKETING_HDR,           cam_hdr_param_t,             1);
-    INCLUDE(XIAOMI_03,                                  uint32_t,                    1);
-    INCLUDE(XIAOMI_04,                                  uint32_t,                    1);
+    volatile char nubia_reserved1[3];
+    INCLUDE(NUBIA_10,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_07,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_08,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_09,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_11,                                   uint8_t,                    24);
+    INCLUDE(NUBIA_12,                                   uint8_t,                    60);
+    INCLUDE(NUBIA_13,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_14,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_15,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_16,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_17,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_18,                                   uint8_t,                     4);
+
+    INCLUDE(NUBIA_01,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_02,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_03,                                   uint8_t,                     1);
+    volatile char nubia_reserved2[3];
+    INCLUDE(NUBIA_04,                                   uint8_t,                     8);
+    INCLUDE(NUBIA_05,                                   uint8_t,                     691216);
+    INCLUDE(NUBIA_06,                                   uint8_t,                     4);
+
+
+    INCLUDE(NUBIA_19,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_20,                                   uint8_t,                     4);
+
+    INCLUDE(NUBIA_22,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_23,                                   uint8_t,                     1);
+    INCLUDE(NUBIA_27,                                   uint8_t,                     1);
+    volatile char nubia_reserved3[2];
+    INCLUDE(NUBIA_24,                                   uint8_t,                     4);
+    INCLUDE(NUBIA_25,                                   uint8_t,                     16);
+    INCLUDE(NUBIA_26,                                   uint8_t,                     4);
+
+    INCLUDE(NUBIA_21,                                   uint8_t,                     1);
 } metadata_data_t;
 
 /* Update clear_metadata_buffer() function when a new is_xxx_valid is added to
@@ -1071,15 +1045,6 @@ typedef struct {
     uint8_t is_statsdebug_stats_params_valid;
     cam_stats_buffer_exif_debug_t statsdebug_stats_buffer_data;
 
-    uint8_t is_statsdebug_bestats_params_valid;
-    cam_bestats_buffer_exif_debug_t statsdebug_bestats_buffer_data;
-
-    uint8_t is_statsdebug_bhist_params_valid;
-    cam_bhist_buffer_exif_debug_t statsdebug_bhist_data;
-
-    uint8_t is_statsdebug_3a_tuning_params_valid;
-    cam_q3a_tuning_info_t statsdebug_3a_tuning_data;
-
 } metadata_buffer_t;
 
 typedef metadata_buffer_t parm_buffer_t;
@@ -1101,9 +1066,6 @@ static inline void clear_metadata_buffer(metadata_buffer_t *meta)
       meta->is_statsdebug_af_params_valid = 0;
       meta->is_statsdebug_asd_params_valid = 0;
       meta->is_statsdebug_stats_params_valid = 0;
-      meta->is_statsdebug_bestats_params_valid = 0;
-      meta->is_statsdebug_bhist_params_valid = 0;
-      meta->is_statsdebug_3a_tuning_params_valid = 0;
     }
 }
 

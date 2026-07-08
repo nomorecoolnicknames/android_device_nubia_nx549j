@@ -38,7 +38,8 @@
 #define MAX_METADATA_PRIVATE_PAYLOAD_SIZE_IN_BYTES 8096
 #define AWB_DEBUG_DATA_SIZE               (45000)
 #define AEC_DEBUG_DATA_SIZE               (5000)
-#define AF_DEBUG_DATA_SIZE                (50000)
+#define AF_DEBUG_DATA_SIZE                (10000)
+#define AF_STATS_DEBUG_DATA_SIZE          (40000)
 #define ASD_DEBUG_DATA_SIZE               (100)
 #define STATS_BUFFER_DEBUG_DATA_SIZE      (75000)
 #define BESTATS_BUFFER_DEBUG_DATA_SIZE    (150000)
@@ -51,7 +52,7 @@
 #define CEILING4(X)  (((X) + 0x0003) & 0xFFFC)
 #define CEILING2(X)  (((X) + 0x0001) & 0xFFFE)
 
-#define MAX_ZOOMS_CNT 101
+#define MAX_ZOOMS_CNT 91
 #define MAX_SIZES_CNT 40
 #define MAX_EXP_BRACKETING_LENGTH 32
 #define MAX_ROI 10
@@ -107,7 +108,7 @@
 #define EXIF_IMAGE_DESCRIPTION_SIZE 100
 
 #define MAX_INFLIGHT_REQUESTS  6
-#define MAX_INFLIGHT_BLOB      6
+#define MAX_INFLIGHT_BLOB      3
 #define MIN_INFLIGHT_REQUESTS  3
 #define MIN_INFLIGHT_60FPS_REQUESTS (6)
 #define MAX_INFLIGHT_REPROCESS_REQUESTS 1
@@ -122,7 +123,7 @@
 
 #define RELCAM_CALIB_ROT_MATRIX_MAX 9
 #define RELCAM_CALIB_SURFACE_PARMS_MAX 32
-#define RELCAM_CALIB_RESERVED_MAX 50
+#define RELCAM_CALIB_RESERVED_MAX 62
 
 #define MAX_NUM_CAMERA_PER_BUNDLE    2 /* Max number of cameras per bundle */
 #define EXTRA_FRAME_SYNC_BUFFERS     4 /* Extra frame sync buffers in dc mode*/
@@ -289,9 +290,6 @@ typedef enum {
     CAM_FORMAT_JPEG_RAW_8BIT,
     CAM_FORMAT_META_RAW_8BIT,
 
-    /* generic 10-bit raw */
-    CAM_FORMAT_META_RAW_10BIT,
-
     /* QCOM RAW formats where data is packed into 64bit word.
      * 14BPP: 1 64-bit word contains 4 pixels p0 - p3, where most
      *       significant 4 bits are set to 0. P0 is stored at LSB.
@@ -367,7 +365,8 @@ typedef enum {
     CAM_FORMAT_BAYER_IDEAL_RAW_MIPI_12BPP_GREY,
     CAM_FORMAT_BAYER_IDEAL_RAW_MIPI_14BPP_GREY,
 
-    CAM_FORMAT_MAX
+    CAM_FORMAT_MAX,
+    CAM_FORMAT_META_RAW_10BIT = CAM_FORMAT_MAX
 } cam_format_t;
 
 typedef enum {
@@ -414,8 +413,6 @@ typedef enum {
     /* followings are per camera */
     CAM_MAPPING_BUF_TYPE_CAPABILITY,  /* mapping camera capability buffer */
     CAM_MAPPING_BUF_TYPE_PARM_BUF,    /* mapping parameters buffer */
-    /* this buffer is needed for the payload to be sent with bundling related cameras cmd */
-    XIAOMI,
     CAM_MAPPING_BUF_TYPE_SYNC_RELATED_SENSORS_BUF, /* mapping sync buffer.*/
 
     /* followings are per stream */
@@ -444,7 +441,7 @@ typedef struct {
     uint32_t cookie;      /* could be job_id(uint32_t) to identify mapping job */
     int32_t fd;           /* origin fd */
     size_t size;          /* size of the buffer */
-    void *buffer;         /* Buffer pointer */
+    void *buffer;         /* client-side pointer; preserved for stock blob ABI */
 } cam_buf_map_type;
 
 typedef struct {
@@ -583,9 +580,9 @@ typedef enum {
 
 typedef struct {
     cam_hfr_mode_t mode;
-    uint8_t dim_cnt;                                        /* hfr sizes table count */
-    cam_dimension_t dim[MAX_SIZES_CNT];                     /* hfr sizes table */
-    uint8_t livesnapshot_sizes_tbl_cnt;                     /* livesnapshot sizes table count */
+    cam_dimension_t dim;
+    uint8_t frame_skip;
+    uint8_t livesnapshot_sizes_tbl_cnt;                     /* livesnapshot sizes table size */
     cam_dimension_t livesnapshot_sizes_tbl[MAX_SIZES_CNT];  /* livesnapshot sizes table */
 } cam_hfr_info_t;
 
@@ -624,6 +621,20 @@ typedef enum {
     CAM_ISO_MODE_800,
     CAM_ISO_MODE_1600,
     CAM_ISO_MODE_3200,
+    NUBIA_ISO_1,
+    NUBIA_ISO_2,
+    NUBIA_ISO_3,
+    NUBIA_ISO_4,
+    NUBIA_ISO_5,
+    NUBIA_ISO_6,
+    NUBIA_ISO_7,
+    NUBIA_ISO_8,
+    NUBIA_ISO_9,
+    NUBIA_ISO_10,
+    NUBIA_ISO_11,
+    NUBIA_ISO_12,
+    NUBIA_ISO_13,
+    NUBIA_ISO_14,
     CAM_ISO_MODE_MAX
 } cam_iso_mode_type;
 
@@ -674,6 +685,7 @@ typedef enum {
     CAM_FOCUS_MODE_CONTINOUS_VIDEO,
     CAM_FOCUS_MODE_CONTINOUS_PICTURE,
     CAM_FOCUS_MODE_MANUAL,
+    CAM_FOCUS_MODE_NUBIA,
     CAM_FOCUS_MODE_MAX
 } cam_focus_mode_type;
 
@@ -911,12 +923,13 @@ typedef enum {
 
 typedef enum {
     IS_TYPE_NONE,
-    IS_TYPE_CROP,
     IS_TYPE_DIS,
     IS_TYPE_GA_DIS,
+    IS_TYPE_EIS_1_0,
     IS_TYPE_EIS_2_0,
-    IS_TYPE_EIS_3_0,
-    IS_TYPE_MAX
+    IS_TYPE_MAX,
+    IS_TYPE_CROP = IS_TYPE_DIS,
+    IS_TYPE_EIS_3_0 = IS_TYPE_EIS_2_0
 } cam_is_type_t;
 
 typedef enum {
@@ -1050,7 +1063,6 @@ typedef struct {
         cam_coordinate_type_t coordinate[MAX_ROI];
         uint32_t aec_roi_idx[MAX_ROI];
     } cam_aec_roi_position;
-    uint16_t xiaomi_reserved;
 } cam_set_aec_roi_t;
 
 typedef struct {
@@ -1293,7 +1305,6 @@ typedef struct {
 } cam_histogram_data_t;
 
 typedef struct {
-    cam_histogram_data_type data_type;
     cam_histogram_data_t r_stats;
     cam_histogram_data_t b_stats;
     cam_histogram_data_t gr_stats;
@@ -1327,6 +1338,7 @@ typedef struct {
 typedef struct {
     uint32_t scale;
     float diopter;
+    volatile char nubia_reserved1[4];
 } cam_focus_pos_info_t ;
 
 typedef struct {
@@ -1385,9 +1397,7 @@ typedef struct {
     cam_focus_mode_type focus_mode;        /* focus mode from backend */
     int32_t focus_pos;
     cam_af_flush_info_t flush_info;
-    uint8_t isDepth;
-    float focus_value;
-    uint8_t spot_light_detected;
+    volatile char nubia_reserved1[4];
 } cam_auto_focus_data_t;
 
 typedef struct {
@@ -1529,6 +1539,7 @@ typedef struct {
     int32_t est_snap_iso_value;
     uint32_t est_snap_luma;
     uint32_t est_snap_target;
+    volatile char nubia_reserved[36];
 } cam_3a_params_t;
 
 typedef struct {
@@ -1549,6 +1560,7 @@ typedef struct {
     int32_t cct_value;
     cam_awb_gain_t rgb_gains;
     cam_awb_ccm_update_t ccm_update;
+    volatile char nubia_reserved[4];
 } cam_awb_params_t;
 
 typedef struct {
@@ -1559,7 +1571,13 @@ typedef struct {
 /* AF debug data for exif*/
 typedef struct {
     int32_t af_debug_data_size;
+    int32_t haf_debug_data_size;
+    int32_t tof_debug_data_size;
+    int32_t dciaf_debug_data_size;
+    int32_t pdaf_debug_data_size;
     char af_private_debug_data[AF_DEBUG_DATA_SIZE];
+    int32_t af_stats_buffer_size;
+    char af_stats_private_debug_data[AF_STATS_DEBUG_DATA_SIZE];
 } cam_af_exif_debug_t;
 
 typedef struct {
@@ -1569,6 +1587,7 @@ typedef struct {
 
 typedef struct {
     int32_t bg_stats_buffer_size;
+    int32_t bhist_stats_buffer_size;
     int32_t bg_config_buffer_size;
     char stats_buffer_private_debug_data[STATS_BUFFER_DEBUG_DATA_SIZE];
 } cam_stats_buffer_exif_debug_t;
@@ -1661,17 +1680,13 @@ typedef struct {
     cam_stream_type_t type[MAX_NUM_STREAMS];
     cam_feature_mask_t postprocess_mask[MAX_NUM_STREAMS];
     cam_buffer_info_t buffer_info;
-    cam_is_type_t is_type[MAX_NUM_STREAMS];
+    cam_is_type_t is_type;
     cam_hfr_mode_t hfr_mode;
     cam_format_t format[MAX_NUM_STREAMS];
     uint32_t buf_alignment;
     uint32_t min_stride;
     uint32_t min_scanline;
     uint8_t batch_size;
-    cam_sync_type_t sync_type;
-    uint32_t dt[MAX_NUM_STREAMS];
-    uint32_t vc[MAX_NUM_STREAMS];
-    cam_sub_format_type_t sub_format_type[MAX_NUM_STREAMS];
 } cam_stream_size_info_t;
 
 typedef enum {
@@ -1703,13 +1718,8 @@ typedef struct {
 } cam_hw_data_overwrite_t;
 
 typedef struct {
-    uint32_t streamID;
-    uint32_t buf_index;
-} cam_stream_request_t;
-
-typedef struct {
     uint32_t num_streams;
-    cam_stream_request_t stream_request[MAX_NUM_STREAMS];
+    uint32_t streamID[MAX_NUM_STREAMS];
 } cam_stream_ID_t;
 
 /*CAC Message posted during pipeline*/
@@ -1930,9 +1940,6 @@ typedef enum {
     CAM_INTF_META_EXIF_DEBUG_AF,
     CAM_INTF_META_EXIF_DEBUG_ASD,
     CAM_INTF_META_EXIF_DEBUG_STATS,
-    CAM_INTF_META_EXIF_DEBUG_BESTATS,
-    CAM_INTF_META_EXIF_DEBUG_BHIST,
-    CAM_INTF_META_EXIF_DEBUG_3A_TUNING,
     CAM_INTF_PARM_GET_CHROMATIX,
     CAM_INTF_PARM_SET_RELOAD_CHROMATIX,
     CAM_INTF_PARM_SET_AUTOFOCUSTUNING, /* 80 */
@@ -1946,7 +1953,7 @@ typedef enum {
     CAM_INTF_PARM_CDS_MODE,
     CAM_INTF_PARM_TONE_MAP_MODE,
     CAM_INTF_PARM_CAPTURE_FRAME_CONFIG, /* 90 */
-    CAM_INTF_PARM_LED_CALIBRATION,
+    CAM_INTF_PARM_DUAL_LED_CALIBRATION,
     CAM_INTF_PARM_ADV_CAPTURE_MODE,
 
     /* stream based parameters */
@@ -2154,7 +2161,6 @@ typedef enum {
     /* parameters added for related cameras */
     /* fetch calibration info for related cam subsystem */
     CAM_INTF_PARM_RELATED_SENSORS_CALIBRATION,
-    XIAOMI_01,
     /* focal length ratio info */
     CAM_INTF_META_AF_FOCAL_LENGTH_RATIO,
     /* crop for binning & FOV adjust */
@@ -2173,7 +2179,6 @@ typedef enum {
     CAM_INTF_PARM_FLIP,
     /*Frame divert info from ISP*/
     CAM_INTF_BUF_DIVERT_INFO,
-    XIAOMI_02,
     /* Use AV timer */
     CAM_INTF_META_USE_AV_TIMER,
     CAM_INTF_META_EFFECTIVE_EXPOSURE_FACTOR,
@@ -2213,33 +2218,35 @@ typedef enum {
     CAM_INTF_META_TOUCH_AE_RESULT,
     /* Param for updating initial exposure index value*/
     CAM_INTF_PARM_INITIAL_EXPOSURE_INDEX,
-    /* Gain applied post raw captrue.
-       ISP digital gain */
-    CAM_INTF_META_ISP_SENSITIVITY,
+    NUBIA_01,
+    NUBIA_02,
+    NUBIA_03,
+    NUBIA_04,
+    NUBIA_05,
+    NUBIA_06,
     /* Param for enabling instant aec*/
     CAM_INTF_PARM_INSTANT_AEC,
-    /* Param for tracking previous reprocessing activity */
-    CAM_INTF_META_REPROCESS_FLAGS,
-    /* Param of cropping information for JPEG encoder */
-    CAM_INTF_PARM_JPEG_ENCODE_CROP,
-    /* Param of scaling information for JPEG encoder */
-    CAM_INTF_PARM_JPEG_SCALE_DIMENSION,
-    /*Param for updating Quadra CFA mode */
-    CAM_INTF_PARM_QUADRA_CFA,
-    /* Meta Raw Dim */
-    CAM_INTF_META_RAW,
-    /* Number of streams and size of streams in
-       current configuration for pic res*/
-    CAM_INTF_META_STREAM_INFO_FOR_PIC_RES,
-    CAM_INTF_META_FOCUS_DEPTH_INFO,
-    /*Focus value output from af core*/
-    CAM_INTF_META_FOCUS_VALUE,
-    /*Spot light detection result output from af core*/
-    CAM_INTF_META_SPOT_LIGHT_DETECT,
-    /* HAL based HDR*/
-    CAM_INTF_PARM_HAL_BRACKETING_HDR,
-    XIAOMI_03,
-    XIAOMI_04,
+    NUBIA_07,
+    NUBIA_08,
+    NUBIA_09,
+    NUBIA_10,
+    NUBIA_11,
+    NUBIA_12,
+    NUBIA_13,
+    NUBIA_14,
+    NUBIA_15,
+    NUBIA_16,
+    NUBIA_17,
+    NUBIA_18,
+    NUBIA_19,
+    NUBIA_20,
+    NUBIA_21,
+    NUBIA_22,
+    NUBIA_23,
+    NUBIA_24,
+    NUBIA_25,
+    NUBIA_26,
+    NUBIA_27,
     CAM_INTF_PARM_MAX
 } cam_intf_parm_type_t;
 
@@ -2395,6 +2402,11 @@ typedef enum {
     CAM_FLASH_CTRL_SINGLE,
     CAM_FLASH_CTRL_TORCH
 } cam_flash_ctrl_t;
+
+typedef struct {
+    uint8_t frame_dropped;
+    cam_stream_ID_t cam_stream_ID;
+} cam_frame_dropped_t;
 
 typedef struct {
     uint8_t ae_mode;

@@ -30,6 +30,9 @@
 // System dependencies
 #include <pthread.h>
 #include <fcntl.h>
+#include <string.h>
+#include <strings.h>
+#include <cutils/properties.h>
 
 // Camera dependencies
 #include "cam_semaphore.h"
@@ -44,6 +47,15 @@ extern mm_channel_t * mm_camera_util_get_channel_by_handler(mm_camera_obj_t * ca
 static mm_channel_frame_sync_info_t fs = { .num_cam =0, .pos = 0};
 /* Frame sync info access lock */
 static pthread_mutex_t fs_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int32_t nx549j_camera_prop_enabled(const char *name)
+{
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get(name, value, "0");
+    return !strcmp(value, "1") || !strcasecmp(value, "true") ||
+            !strcasecmp(value, "yes") || !strcasecmp(value, "on");
+}
 
 /* internal function declare goes here */
 int32_t mm_channel_qbuf(mm_channel_t *my_obj,
@@ -202,6 +214,19 @@ static void mm_channel_dispatch_super_buf(mm_camera_cmdcb_t *cmd_cb,
     }
 
     if (my_obj->bundle.super_buf_notify_cb) {
+        LOGE("NX549J camera superdiag: dispatch_super_buf ch=0x%x "
+                "num_bufs=%u frame0=%u type0=%d ready=%d unlock=%d cb=%p",
+                my_obj->my_hdl,
+                cmd_cb->u.superbuf.num_bufs,
+                cmd_cb->u.superbuf.num_bufs > 0 &&
+                        cmd_cb->u.superbuf.bufs[0] != NULL ?
+                        cmd_cb->u.superbuf.bufs[0]->frame_idx : 0,
+                cmd_cb->u.superbuf.num_bufs > 0 &&
+                        cmd_cb->u.superbuf.bufs[0] != NULL ?
+                        cmd_cb->u.superbuf.bufs[0]->stream_type : -1,
+                cmd_cb->u.superbuf.bReadyForPrepareSnapshot,
+                cmd_cb->u.superbuf.bUnlockAEC,
+                (void *)my_obj->bundle.super_buf_notify_cb);
         my_obj->bundle.super_buf_notify_cb(&cmd_cb->u.superbuf, my_obj->bundle.user_data);
     }
 }
@@ -228,6 +253,7 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
     mm_channel_queue_node_t *node = NULL;
     mm_channel_t *ch_obj = (mm_channel_t *)user_data;
     uint32_t i = 0;
+    int32_t rc = 0;
     /* Set expected frame id to a future frame idx, large enough to wait
     * for good_frame_idx_range, and small enough to still capture an image */
     uint8_t needStartZSL = FALSE;
@@ -236,6 +262,24 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
         return;
     }
     if (MM_CAMERA_CMD_TYPE_DATA_CB  == cmd_cb->cmd_type) {
+        if (cmd_cb->u.buf.buf != NULL &&
+                (cmd_cb->u.buf.buf->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+                 ch_obj->pending_cnt > 0)) {
+            LOGE("NX549J camera superdiag: process DATA ch=0x%x "
+                    "stream_id=%u type=%d frame=%u idx=%u pending=%d "
+                    "queue=%d match=%d expected=%u notify=%d waitPrep=%d",
+                    ch_obj->my_hdl,
+                    cmd_cb->u.buf.stream_id,
+                    cmd_cb->u.buf.buf->stream_type,
+                    cmd_cb->u.buf.frame_idx,
+                    cmd_cb->u.buf.buf->buf_idx,
+                    ch_obj->pending_cnt,
+                    ch_obj->bundle.superbuf_queue.que.size,
+                    ch_obj->bundle.superbuf_queue.match_cnt,
+                    ch_obj->bundle.superbuf_queue.expected_frame_id,
+                    ch_obj->bundle.superbuf_queue.attr.notify_mode,
+                    ch_obj->bWaitForPrepSnapshotDone);
+        }
         /* comp_and_enqueue */
         mm_channel_superbuf_comp_and_enqueue(
                         ch_obj,
@@ -248,6 +292,18 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
         ch_obj->req_type = cmd_cb->u.req_buf.type;
         ch_obj->bWaitForPrepSnapshotDone = 0;
 
+        LOGE("NX549J camera superdiag: request_super_buf ch=0x%x "
+                "pending=%d retro=%d type=%d primary=%d queue=%d "
+                "match=%d expected=%u notify=%d",
+                ch_obj->my_hdl,
+                ch_obj->pending_cnt,
+                ch_obj->pending_retro_cnt,
+                ch_obj->req_type,
+                cmd_cb->u.req_buf.primary_only,
+                ch_obj->bundle.superbuf_queue.que.size,
+                ch_obj->bundle.superbuf_queue.match_cnt,
+                ch_obj->bundle.superbuf_queue.expected_frame_id,
+                ch_obj->bundle.superbuf_queue.attr.notify_mode);
         LOGH("pending cnt (%d), retro count (%d)"
                 "req_type (%d) is_primary (%d)",
                  ch_obj->pending_cnt, ch_obj->pending_retro_cnt,
@@ -262,17 +318,72 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
         ch_obj->stopZslSnapshot = 0;
         ch_obj->unLockAEC = 0;
 
+        if (nx549j_camera_prop_enabled(
+                "persist.camera.nx549j.capture_request_start_zsl") &&
+                ch_obj->pending_cnt > 0 &&
+                ch_obj->manualZSLSnapshot == FALSE &&
+                ch_obj->startZSlSnapshotCalled == FALSE &&
+                ch_obj->isConfigCapture == FALSE &&
+                ch_obj->needLEDFlash == FALSE &&
+                ch_obj->bracketingState == MM_CHANNEL_BRACKETING_STATE_OFF) {
+            LOGE("NX549J camera superdiag: force start_zsl_on_request ch=0x%x "
+                    "pending=%d req=%d notify=%d queue=%d match=%d "
+                    "expected=%u by persist.camera.nx549j.capture_request_start_zsl=1",
+                    ch_obj->my_hdl,
+                    ch_obj->pending_cnt,
+                    ch_obj->req_type,
+                    ch_obj->bundle.superbuf_queue.attr.notify_mode,
+                    ch_obj->bundle.superbuf_queue.que.size,
+                    ch_obj->bundle.superbuf_queue.match_cnt,
+                    ch_obj->bundle.superbuf_queue.expected_frame_id);
+            rc = mm_camera_start_zsl_snapshot(ch_obj->cam_obj);
+            LOGE("NX549J camera superdiag: force start_zsl_on_request done "
+                    "ch=0x%x rc=%d",
+                    ch_obj->my_hdl,
+                    rc);
+            if (rc == 0) {
+                ch_obj->startZSlSnapshotCalled = TRUE;
+                ch_obj->burstSnapNum = ch_obj->pending_cnt;
+                ch_obj->bWaitForPrepSnapshotDone = 0;
+            }
+        }
+
         mm_channel_superbuf_skip(ch_obj, &ch_obj->bundle.superbuf_queue);
 
     } else if (MM_CAMERA_CMD_TYPE_START_ZSL == cmd_cb->cmd_type) {
             ch_obj->manualZSLSnapshot = TRUE;
-            mm_camera_start_zsl_snapshot(ch_obj->cam_obj);
+            LOGE("NX549J camera superdiag: manual START_ZSL cmd ch=0x%x "
+                    "pending=%d start_called=%d",
+                    ch_obj->my_hdl,
+                    ch_obj->pending_cnt,
+                    ch_obj->startZSlSnapshotCalled);
+            rc = mm_camera_start_zsl_snapshot(ch_obj->cam_obj);
+            LOGE("NX549J camera superdiag: manual START_ZSL cmd done "
+                    "ch=0x%x rc=%d",
+                    ch_obj->my_hdl,
+                    rc);
     } else if (MM_CAMERA_CMD_TYPE_STOP_ZSL == cmd_cb->cmd_type) {
             ch_obj->manualZSLSnapshot = FALSE;
-            mm_camera_stop_zsl_snapshot(ch_obj->cam_obj);
+            LOGE("NX549J camera superdiag: manual STOP_ZSL cmd ch=0x%x "
+                    "pending=%d start_called=%d",
+                    ch_obj->my_hdl,
+                    ch_obj->pending_cnt,
+                    ch_obj->startZSlSnapshotCalled);
+            rc = mm_camera_stop_zsl_snapshot(ch_obj->cam_obj);
+            LOGE("NX549J camera superdiag: manual STOP_ZSL cmd done "
+                    "ch=0x%x rc=%d",
+                    ch_obj->my_hdl,
+                    rc);
     } else if (MM_CAMERA_CMD_TYPE_CONFIG_NOTIFY == cmd_cb->cmd_type) {
            ch_obj->bundle.superbuf_queue.attr.notify_mode = cmd_cb->u.notify_mode;
     } else if (MM_CAMERA_CMD_TYPE_FLUSH_QUEUE  == cmd_cb->cmd_type) {
+        LOGE("NX549J camera superdiag: flush_queue cmd ch=0x%x "
+                "frame=%u type=%d queue=%d match=%d",
+                ch_obj->my_hdl,
+                cmd_cb->u.flush_cmd.frame_idx,
+                cmd_cb->u.flush_cmd.stream_type,
+                ch_obj->bundle.superbuf_queue.que.size,
+                ch_obj->bundle.superbuf_queue.match_cnt);
         ch_obj->bundle.superbuf_queue.expected_frame_id = cmd_cb->u.flush_cmd.frame_idx;
         mm_channel_superbuf_flush(ch_obj,
                 &ch_obj->bundle.superbuf_queue, cmd_cb->u.flush_cmd.stream_type);
@@ -438,6 +549,15 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
     while (((ch_obj->pending_cnt > 0) ||
              (MM_CAMERA_SUPER_BUF_NOTIFY_CONTINUOUS == notify_mode)) &&
              (!ch_obj->bWaitForPrepSnapshotDone)) {
+        LOGE("NX549J camera superdiag: dispatch_loop ch=0x%x "
+                "pending=%d req=%d notify=%d queue=%d match=%d expected=%u",
+                ch_obj->my_hdl,
+                ch_obj->pending_cnt,
+                ch_obj->req_type,
+                notify_mode,
+                ch_obj->bundle.superbuf_queue.que.size,
+                ch_obj->bundle.superbuf_queue.match_cnt,
+                ch_obj->bundle.superbuf_queue.expected_frame_id);
 
         /* dequeue */
         mm_channel_node_info_t info;
@@ -489,16 +609,64 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
         } else {
            node = mm_channel_superbuf_dequeue(&ch_obj->bundle.superbuf_queue, ch_obj);
            if (node != NULL) {
+               LOGE("NX549J camera superdiag: dequeue got ch=0x%x "
+                       "frame=%u num=%u matched=%d pending=%d queue=%d "
+                       "match=%d",
+                       ch_obj->my_hdl,
+                       node->frame_idx,
+                       node->num_of_bufs,
+                       node->matched,
+                       ch_obj->pending_cnt,
+                       ch_obj->bundle.superbuf_queue.que.size,
+                       ch_obj->bundle.superbuf_queue.match_cnt);
                if (ch_obj->isConfigCapture &&
                        ((node->frame_idx <
                         ch_obj->capture_frame_id[ch_obj->cur_capture_idx]))) {
+                   uint32_t expected_frame =
+                           ch_obj->capture_frame_id[ch_obj->cur_capture_idx];
+                   uint32_t frame_delta = expected_frame - node->frame_idx;
                    uint8_t i;
-                   LOGD("Not expected super buffer. frameID = %d expected = %d",
-                           node->frame_idx, ch_obj->capture_frame_id[ch_obj->cur_capture_idx]);
-                   for (i = 0; i < node->num_of_bufs; i++) {
-                       mm_channel_qbuf(ch_obj, node->super_buf[i].buf);
+                   if (nx549j_camera_prop_enabled(
+                               "persist.camera.nx549j.capture_accept_near_zsl") &&
+                           ch_obj->pending_cnt > 0 &&
+                           node->matched &&
+                           expected_frame != 0 &&
+                           frame_delta <= 2) {
+                       LOGE("NX549J camera superdiag: accept near zsl frame "
+                               "ch=0x%x frame=%u expected=%u delta=%u "
+                               "pending=%d cur_batch=%u by "
+                               "persist.camera.nx549j.capture_accept_near_zsl=1",
+                               ch_obj->my_hdl,
+                               node->frame_idx,
+                               expected_frame,
+                               frame_delta,
+                               ch_obj->pending_cnt,
+                               ch_obj->cur_capture_idx);
+                       ch_obj->capture_frame_id[ch_obj->cur_capture_idx] =
+                               node->frame_idx;
+                       ch_obj->bundle.superbuf_queue.expected_frame_id =
+                               node->frame_idx;
+                       ch_obj->bundle.superbuf_queue.good_frame_id =
+                               node->frame_idx;
+                       info.num_nodes = 1;
+                       info.ch_obj[0] = ch_obj;
+                       info.node[0] = node;
+                   } else {
+                       LOGE("NX549J camera superdiag: reject early zsl frame "
+                               "ch=0x%x frame=%u expected=%u delta=%u "
+                               "matched=%d pending=%d cur_batch=%u",
+                               ch_obj->my_hdl,
+                               node->frame_idx,
+                               expected_frame,
+                               frame_delta,
+                               node->matched,
+                               ch_obj->pending_cnt,
+                               ch_obj->cur_capture_idx);
+                       for (i = 0; i < node->num_of_bufs; i++) {
+                           mm_channel_qbuf(ch_obj, node->super_buf[i].buf);
+                       }
+                       free(node);
                    }
-                   free(node);
                } else {
                    info.num_nodes = 1;
                    info.ch_obj[0] = ch_obj;
@@ -507,6 +675,12 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
             }
         }
         if (info.num_nodes > 0) {
+            LOGE("NX549J camera superdiag: send_ready ch=0x%x "
+                    "nodes=%u pending=%d notify=%d",
+                    ch_obj->my_hdl,
+                    info.num_nodes,
+                    ch_obj->pending_cnt,
+                    notify_mode);
             /* decrease pending_cnt */
             if (MM_CAMERA_SUPER_BUF_NOTIFY_BURST == notify_mode) {
                 ch_obj->pending_cnt--;
@@ -557,6 +731,14 @@ static void mm_channel_process_stream_buf(mm_camera_cmdcb_t * cmd_cb,
             /* dispatch superbuf */
             mm_channel_send_super_buf(&info);
         } else {
+            LOGE("NX549J camera superdiag: dispatch_break ch=0x%x "
+                    "pending=%d notify=%d queue=%d match=%d expected=%u",
+                    ch_obj->my_hdl,
+                    ch_obj->pending_cnt,
+                    notify_mode,
+                    ch_obj->bundle.superbuf_queue.que.size,
+                    ch_obj->bundle.superbuf_queue.match_cnt,
+                    ch_obj->bundle.superbuf_queue.expected_frame_id);
             /* no superbuf avail, break the loop */
             break;
         }
@@ -591,6 +773,14 @@ void mm_channel_send_super_buf(mm_channel_node_info_t *info)
             mm_camera_cmdcb_t* cb_node = NULL;
             LOGD("Send superbuf to HAL, pending_cnt=%d",
                      ch_obj->pending_cnt);
+            LOGE("NX549J camera superdiag: send_super_buf ch=0x%x "
+                    "node=%u frame=%u num=%u pending=%d cb=%p",
+                    ch_obj->my_hdl,
+                    idx,
+                    node->frame_idx,
+                    node->num_of_bufs,
+                    ch_obj->pending_cnt,
+                    (void *)ch_obj->bundle.super_buf_notify_cb);
             /* send cam_sem_post to wake up cb thread to dispatch super buffer */
             cb_node = (mm_camera_cmdcb_t *)malloc(sizeof(mm_camera_cmdcb_t));
             if (NULL != cb_node) {
@@ -600,6 +790,15 @@ void mm_channel_send_super_buf(mm_channel_node_info_t *info)
                 uint8_t i = 0;
                 for (i = 0; i < node->num_of_bufs; i++) {
                     cb_node->u.superbuf.bufs[i] = node->super_buf[i].buf;
+                    LOGE("NX549J camera superdiag: send_super_buf buf[%u] "
+                            "stream_id=%u type=%d frame=%u idx=%u",
+                            i,
+                            node->super_buf[i].stream_id,
+                            node->super_buf[i].buf != NULL ?
+                                    node->super_buf[i].buf->stream_type : -1,
+                            node->super_buf[i].frame_idx,
+                            node->super_buf[i].buf != NULL ?
+                                    node->super_buf[i].buf->buf_idx : 0);
                 }
                 cb_node->u.superbuf.camera_handle = ch_obj->cam_obj->my_hdl;
                 cb_node->u.superbuf.ch_id = ch_obj->my_hdl;
@@ -1429,6 +1628,14 @@ int32_t mm_channel_get_bundle_info(mm_channel_t *my_obj,
     mm_stream_t *s_obj = NULL;
     cam_stream_type_t stream_type = CAM_STREAM_TYPE_DEFAULT;
     int32_t rc = 0;
+    int include_metadata = nx549j_camera_prop_enabled(
+            "persist.camera.nx549j.capture_bundle_metadata");
+    int preview_snapshot_unbundle = nx549j_camera_prop_enabled(
+            "persist.camera.nx549j.preview_snapshot_unbundle");
+    int preview_snapshot_bundle_metadata = nx549j_camera_prop_enabled(
+            "persist.camera.nx549j.preview_snapshot_bundle_metadata");
+    int has_preview_stream = 0;
+    int has_snapshot_stream = 0;
 
     memset(bundle_info, 0, sizeof(cam_bundle_config_t));
     bundle_info->bundle_id = my_obj->my_hdl;
@@ -1437,10 +1644,55 @@ int32_t mm_channel_get_bundle_info(mm_channel_t *my_obj,
         if (my_obj->streams[i].my_hdl > 0) {
             s_obj = mm_channel_util_get_stream_by_handler(my_obj,
                                                           my_obj->streams[i].my_hdl);
+            if ((NULL != s_obj) && (NULL != s_obj->stream_info) &&
+                    (s_obj->ch_obj == my_obj)) {
+                stream_type = s_obj->stream_info->stream_type;
+                if (CAM_STREAM_TYPE_PREVIEW == stream_type) {
+                    has_preview_stream = 1;
+                } else if (CAM_STREAM_TYPE_SNAPSHOT == stream_type) {
+                    has_snapshot_stream = 1;
+                }
+            }
+        }
+    }
+    for (i = 0; i < MAX_STREAM_NUM_IN_BUNDLE; i++) {
+        if (my_obj->streams[i].my_hdl > 0) {
+            s_obj = mm_channel_util_get_stream_by_handler(my_obj,
+                                                          my_obj->streams[i].my_hdl);
             if (NULL != s_obj) {
                 stream_type = s_obj->stream_info->stream_type;
-                if ((CAM_STREAM_TYPE_METADATA != stream_type) &&
+                if (preview_snapshot_unbundle &&
+                        has_preview_stream &&
+                        has_snapshot_stream &&
+                        ((CAM_STREAM_TYPE_SNAPSHOT == stream_type) ||
+                                ((CAM_STREAM_TYPE_METADATA == stream_type) &&
+                                        !preview_snapshot_bundle_metadata))) {
+                    LOGE("NX549J camera streamdiag: preview_snapshot_unbundle "
+                            "skip bundle stream ch=0x%x stream_id=%d type=%d "
+                            "bundle_metadata=%d",
+                            my_obj->my_hdl, s_obj->server_stream_id,
+                            stream_type, preview_snapshot_bundle_metadata);
+                    continue;
+                }
+                if (((CAM_STREAM_TYPE_METADATA != stream_type) ||
+                        (include_metadata && has_snapshot_stream)) &&
                         (s_obj->ch_obj == my_obj)) {
+                    if (bundle_info->num_of_streams >=
+                            MAX_STREAM_NUM_IN_BUNDLE) {
+                        LOGE("NX549J camera streamdiag: bundle_info overflow "
+                                "ch=0x%x stream_id=%d type=%d num=%d",
+                                my_obj->my_hdl, s_obj->server_stream_id,
+                                stream_type, bundle_info->num_of_streams);
+                        rc = -1;
+                        break;
+                    }
+                    if (include_metadata && has_snapshot_stream) {
+                        LOGE("NX549J camera streamdiag: bundle_info add "
+                                "ch=0x%x stream_id=%d type=%d "
+                                "include_metadata=%d",
+                                my_obj->my_hdl, s_obj->server_stream_id,
+                                stream_type, include_metadata);
+                    }
                     bundle_info->stream_ids[bundle_info->num_of_streams++] =
                                                         s_obj->server_stream_id;
                 }
@@ -1481,6 +1733,10 @@ int32_t mm_channel_start(mm_channel_t *my_obj)
     mm_stream_t *s_obj = NULL;
     int meta_stream_idx = 0;
     cam_stream_type_t stream_type = CAM_STREAM_TYPE_DEFAULT;
+    uint8_t has_snapshot_stream = 0;
+    int32_t capture_superbuf_snapshot_only =
+            nx549j_camera_prop_enabled(
+                    "persist.camera.nx549j.capture_superbuf_snapshot_only");
 
     for (i = 0; i < MAX_STREAM_NUM_IN_BUNDLE; i++) {
         if (my_obj->streams[i].my_hdl > 0) {
@@ -1492,6 +1748,11 @@ int32_t mm_channel_start(mm_channel_t *my_obj)
                 if ((stream_type == CAM_STREAM_TYPE_METADATA) &&
                         (s_obj->ch_obj == my_obj)) {
                     meta_stream_idx = num_streams_to_start;
+                }
+                if ((stream_type == CAM_STREAM_TYPE_SNAPSHOT) &&
+                        (s_obj->ch_obj == my_obj) &&
+                        !s_obj->stream_info->noFrameExpected) {
+                    has_snapshot_stream = 1;
                 }
                 s_objs[num_streams_to_start++] = s_obj;
 
@@ -1508,12 +1769,47 @@ int32_t mm_channel_start(mm_channel_t *my_obj)
         s_objs[0] = s_objs[meta_stream_idx];
         s_objs[meta_stream_idx] = s_obj;
     }
+    LOGE("NX549J camera streamdiag: channel_start ch=0x%x streams=%u "
+            "bundle_queue=%u meta_idx=%d cb=%p snapshot=%u snap_only=%d",
+            my_obj->my_hdl,
+            num_streams_to_start,
+            num_streams_in_bundle_queue,
+            meta_stream_idx,
+            (void *)my_obj->bundle.super_buf_notify_cb,
+            has_snapshot_stream,
+            capture_superbuf_snapshot_only);
+    for (i = 0; i < num_streams_to_start; i++) {
+        if (s_objs[i] != NULL && s_objs[i]->stream_info != NULL) {
+            LOGE("NX549J camera streamdiag: channel_start order[%d] "
+                    "hdl=0x%x server_id=%d svr=%u type=%d fmt=%d "
+                    "dim=%dx%d mode=%d burst=%u is=%d secure=%d perf=%d "
+                    "state=%d no_frame=%u linked=%d owner_match=%d pp=0x%llx",
+                    i,
+                    s_objs[i]->my_hdl,
+                    s_objs[i]->server_stream_id,
+                    s_objs[i]->stream_info->stream_svr_id,
+                    s_objs[i]->stream_info->stream_type,
+                    s_objs[i]->stream_info->fmt,
+                    s_objs[i]->stream_info->dim.width,
+                    s_objs[i]->stream_info->dim.height,
+                    s_objs[i]->stream_info->streaming_mode,
+                    s_objs[i]->stream_info->num_of_burst,
+                    s_objs[i]->stream_info->is_type,
+                    s_objs[i]->stream_info->is_secure,
+                    s_objs[i]->stream_info->perf_mode,
+                    s_objs[i]->state,
+                    s_objs[i]->stream_info->noFrameExpected,
+                    s_objs[i]->is_linked,
+                    s_objs[i]->ch_obj == my_obj,
+                    s_objs[i]->stream_info->pp_config.feature_mask);
+        }
+    }
 
     if (NULL != my_obj->bundle.super_buf_notify_cb) {
         /* need to send up cb, therefore launch thread */
         /* init superbuf queue */
         mm_channel_superbuf_queue_init(&my_obj->bundle.superbuf_queue);
-        my_obj->bundle.superbuf_queue.num_streams = num_streams_in_bundle_queue;
+        my_obj->bundle.superbuf_queue.num_streams = 0;
         my_obj->bundle.superbuf_queue.expected_frame_id =
                 my_obj->bundle.superbuf_queue.attr.user_expected_frame_id;
         my_obj->bundle.superbuf_queue.expected_frame_id_without_led = 0;
@@ -1525,6 +1821,22 @@ int32_t mm_channel_start(mm_channel_t *my_obj)
         for (i = 0; i < num_streams_to_start; i++) {
             /* Only bundle streams that belong to the channel */
             if(!(s_objs[i]->stream_info->noFrameExpected)) {
+                stream_type = s_objs[i]->stream_info->stream_type;
+                if (capture_superbuf_snapshot_only &&
+                        has_snapshot_stream &&
+                        (stream_type != CAM_STREAM_TYPE_SNAPSHOT)) {
+                    if (s_objs[i]->ch_obj == my_obj) {
+                        s_objs[i]->is_bundled = 0;
+                    }
+                    LOGE("NX549J camera superdiag: snapshot-only bundle "
+                            "skip stream ch=0x%x hdl=0x%x server_id=%d "
+                            "type=%d",
+                            my_obj->my_hdl,
+                            s_objs[i]->my_hdl,
+                            s_objs[i]->server_stream_id,
+                            stream_type);
+                    continue;
+                }
                 if (s_objs[i]->ch_obj == my_obj) {
                     /* set bundled flag to streams */
                     s_objs[i]->is_bundled = 1;
@@ -1532,6 +1844,22 @@ int32_t mm_channel_start(mm_channel_t *my_obj)
                 my_obj->bundle.superbuf_queue.bundled_streams[j++] = s_objs[i]->my_hdl;
             }
         }
+        my_obj->bundle.superbuf_queue.num_streams = j;
+        LOGE("NX549J camera superdiag: bundle queue armed ch=0x%x "
+                "num=%u counted=%u handles=0x%x,0x%x,0x%x,0x%x notify=%d "
+                "max_unmatched=%d expected=%u snap_only=%d snapshot=%u",
+                my_obj->my_hdl,
+                my_obj->bundle.superbuf_queue.num_streams,
+                num_streams_in_bundle_queue,
+                my_obj->bundle.superbuf_queue.bundled_streams[0],
+                my_obj->bundle.superbuf_queue.bundled_streams[1],
+                my_obj->bundle.superbuf_queue.bundled_streams[2],
+                my_obj->bundle.superbuf_queue.bundled_streams[3],
+                my_obj->bundle.superbuf_queue.attr.notify_mode,
+                my_obj->bundle.superbuf_queue.attr.max_unmatched_frames,
+                my_obj->bundle.superbuf_queue.expected_frame_id,
+                capture_superbuf_snapshot_only,
+                has_snapshot_stream);
 
         /* launch cb thread for dispatching super buf through cb */
         snprintf(my_obj->cb_thread.threadName, THREAD_NAME_SIZE, "CAM_SuperBuf");
@@ -1572,30 +1900,81 @@ int32_t mm_channel_start(mm_channel_t *my_obj)
         }
 
         /* allocate buf */
+        LOGE("NX549J camera streamdiag: channel_start get_buf begin idx=%d "
+                "stream_id=%d type=%d mode=%d burst=%u state=%d",
+                i,
+                s_objs[i]->server_stream_id,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->stream_type : -1,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->streaming_mode : -1,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->num_of_burst : 0,
+                s_objs[i]->state);
         rc = mm_stream_fsm_fn(s_objs[i],
                               MM_STREAM_EVT_GET_BUF,
                               NULL,
                               NULL);
+        LOGE("NX549J camera streamdiag: channel_start get_buf done idx=%d "
+                "stream_id=%d rc=%d state=%d",
+                i,
+                s_objs[i]->server_stream_id,
+                rc,
+                s_objs[i]->state);
         if (0 != rc) {
             LOGE("get buf failed at idx(%d)", i);
             break;
         }
 
         /* reg buf */
+        LOGE("NX549J camera streamdiag: channel_start reg_buf begin idx=%d "
+                "stream_id=%d type=%d mode=%d burst=%u state=%d",
+                i,
+                s_objs[i]->server_stream_id,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->stream_type : -1,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->streaming_mode : -1,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->num_of_burst : 0,
+                s_objs[i]->state);
         rc = mm_stream_fsm_fn(s_objs[i],
                               MM_STREAM_EVT_REG_BUF,
                               NULL,
                               NULL);
+        LOGE("NX549J camera streamdiag: channel_start reg_buf done idx=%d "
+                "stream_id=%d rc=%d state=%d",
+                i,
+                s_objs[i]->server_stream_id,
+                rc,
+                s_objs[i]->state);
         if (0 != rc) {
             LOGE("reg buf failed at idx(%d)", i);
             break;
         }
 
         /* start stream */
+        LOGE("NX549J camera streamdiag: channel_start start begin idx=%d "
+                "stream_id=%d type=%d mode=%d burst=%u state=%d",
+                i,
+                s_objs[i]->server_stream_id,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->stream_type : -1,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->streaming_mode : -1,
+                s_objs[i]->stream_info != NULL ?
+                        s_objs[i]->stream_info->num_of_burst : 0,
+                s_objs[i]->state);
         rc = mm_stream_fsm_fn(s_objs[i],
                               MM_STREAM_EVT_START,
                               NULL,
                               NULL);
+        LOGE("NX549J camera streamdiag: channel_start start done idx=%d "
+                "stream_id=%d rc=%d state=%d",
+                i,
+                s_objs[i]->server_stream_id,
+                rc,
+                s_objs[i]->state);
         if (0 != rc) {
             LOGE("start stream failed at idx(%d)", i);
             break;
@@ -2735,6 +3114,24 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
     struct cam_list *last_buf, *insert_before_buf, *last_buf_ptr;
 
     LOGD("E");
+    if (buf_info != NULL && buf_info->buf != NULL &&
+            (buf_info->buf->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+             ch_obj->pending_cnt > 0)) {
+        LOGE("NX549J camera superdiag: comp enter ch=0x%x "
+                "stream_id=%u type=%d frame=%u idx=%u q_streams=%u "
+                "queue=%d match=%d expected=%u pending=%d priority=%d",
+                ch_obj->my_hdl,
+                buf_info->stream_id,
+                buf_info->buf->stream_type,
+                buf_info->frame_idx,
+                buf_info->buf->buf_idx,
+                queue->num_streams,
+                queue->que.size,
+                queue->match_cnt,
+                queue->expected_frame_id,
+                ch_obj->pending_cnt,
+                queue->attr.priority);
+    }
 
     for (buf_s_idx = 0; buf_s_idx < queue->num_streams; buf_s_idx++) {
         if (buf_info->stream_id == queue->bundled_streams[buf_s_idx]) {
@@ -2743,16 +3140,34 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
     }
 
     if (buf_s_idx == queue->num_streams) {
-        LOGE("buf from stream (%d) not bundled", buf_info->stream_id);
+        LOGE("NX549J camera superdiag: comp not bundled ch=0x%x "
+                "stream_id=%u type=%d q_streams=%u",
+                ch_obj->my_hdl,
+                buf_info->stream_id,
+                buf_info->buf != NULL ? buf_info->buf->stream_type : -1,
+                queue->num_streams);
         return -1;
     }
 
     if(buf_info->frame_idx == 0) {
+        LOGE("NX549J camera superdiag: comp qbuf zero-frame ch=0x%x "
+                "stream_id=%u type=%d idx=%u",
+                ch_obj->my_hdl,
+                buf_info->stream_id,
+                buf_info->buf != NULL ? buf_info->buf->stream_type : -1,
+                buf_info->buf != NULL ? buf_info->buf->buf_idx : 0);
         mm_channel_qbuf(ch_obj, buf_info->buf);
         return 0;
     }
 
     if (mm_channel_handle_metadata(ch_obj, queue, buf_info) < 0) {
+        LOGE("NX549J camera superdiag: comp metadata reject ch=0x%x "
+                "stream_id=%u type=%d frame=%u idx=%u",
+                ch_obj->my_hdl,
+                buf_info->stream_id,
+                buf_info->buf != NULL ? buf_info->buf->stream_type : -1,
+                buf_info->frame_idx,
+                buf_info->buf != NULL ? buf_info->buf->buf_idx : 0);
         mm_channel_qbuf(ch_obj, buf_info->buf);
         return -1;
     }
@@ -2760,10 +3175,71 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
     if ((mm_channel_util_seq_comp_w_rollover(buf_info->frame_idx,
             queue->expected_frame_id) < 0) &&
             (mm_channel_validate_super_buf(ch_obj, queue, buf_info) <= 0)) {
-        LOGH("incoming buf id(%d) is older than expected buf id(%d), will discard it",
-                 buf_info->frame_idx, queue->expected_frame_id);
+        LOGE("NX549J camera superdiag: comp discard older ch=0x%x "
+                "stream_id=%u type=%d frame=%u expected=%u",
+                ch_obj->my_hdl,
+                buf_info->stream_id,
+                buf_info->buf != NULL ? buf_info->buf->stream_type : -1,
+                buf_info->frame_idx,
+                queue->expected_frame_id);
         mm_channel_qbuf(ch_obj, buf_info->buf);
         return 0;
+    }
+
+    if (buf_info->buf != NULL &&
+            buf_info->buf->stream_type == CAM_STREAM_TYPE_SNAPSHOT &&
+            queue->num_streams > 1 &&
+            nx549j_camera_prop_enabled(
+                    "persist.camera.nx549j.capture_snapshot_only_superbuf")) {
+        cam_node_t *isolation_node =
+                (cam_node_t *)malloc(sizeof(cam_node_t));
+        mm_channel_queue_node_t *isolation_buf =
+                (mm_channel_queue_node_t *)malloc(sizeof(mm_channel_queue_node_t));
+
+        if (isolation_node != NULL && isolation_buf != NULL) {
+            memset(isolation_node, 0, sizeof(cam_node_t));
+            memset(isolation_buf, 0, sizeof(mm_channel_queue_node_t));
+            isolation_node->data = (void *)isolation_buf;
+            isolation_buf->num_of_bufs = 1;
+            isolation_buf->super_buf[0] = *buf_info;
+            isolation_buf->matched = 1;
+            isolation_buf->expected_frame = FALSE;
+            isolation_buf->frame_idx = buf_info->frame_idx;
+
+            pthread_mutex_lock(&queue->que.lock);
+            cam_list_add_tail_node(&isolation_node->list,
+                    &queue->que.head.list);
+            queue->que.size++;
+            queue->match_cnt++;
+            queue->expected_frame_id =
+                    buf_info->frame_idx + queue->attr.post_frame_skip;
+            pthread_mutex_unlock(&queue->que.lock);
+
+            LOGE("NX549J camera superdiag: comp snapshot-only isolation "
+                    "ch=0x%x stream_id=%u frame=%u idx=%u q_streams=%u "
+                    "queue=%d match=%d expected=%u",
+                    ch_obj->my_hdl,
+                    buf_info->stream_id,
+                    buf_info->frame_idx,
+                    buf_info->buf->buf_idx,
+                    queue->num_streams,
+                    queue->que.size,
+                    queue->match_cnt,
+                    queue->expected_frame_id);
+            return 0;
+        }
+
+        if (isolation_node != NULL) {
+            free(isolation_node);
+        }
+        if (isolation_buf != NULL) {
+            free(isolation_buf);
+        }
+        LOGE("NX549J camera superdiag: comp snapshot-only alloc fail "
+                "ch=0x%x stream_id=%u frame=%u",
+                ch_obj->my_hdl,
+                buf_info->stream_id,
+                buf_info->frame_idx);
     }
 
     /* comp */
@@ -2833,7 +3309,14 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
         if(super_buf->super_buf[buf_s_idx].frame_idx != 0) {
             //This can cause frame drop. We are overwriting same memory.
             pthread_mutex_unlock(&queue->que.lock);
-            LOGW("Warning: frame is already in camera ZSL queue");
+            LOGE("NX549J camera superdiag: comp duplicate slot ch=0x%x "
+                    "stream_id=%u type=%d frame=%u slot=%u old_frame=%u",
+                    ch_obj->my_hdl,
+                    buf_info->stream_id,
+                    buf_info->buf != NULL ? buf_info->buf->stream_type : -1,
+                    buf_info->frame_idx,
+                    buf_s_idx,
+                    super_buf->super_buf[buf_s_idx].frame_idx);
             mm_channel_qbuf(ch_obj, buf_info->buf);
             return 0;
         }
@@ -2851,6 +3334,17 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
         }
 
         if (super_buf->matched) {
+            LOGE("NX549J camera superdiag: comp matched existing ch=0x%x "
+                    "frame=%u num=%u queue=%d match_before=%d "
+                    "expected_before=%u slot=%u type=%d",
+                    ch_obj->my_hdl,
+                    super_buf->frame_idx,
+                    super_buf->num_of_bufs,
+                    queue->que.size,
+                    queue->match_cnt,
+                    queue->expected_frame_id,
+                    buf_s_idx,
+                    buf_info->buf != NULL ? buf_info->buf->stream_type : -1);
             if(ch_obj->isFlashBracketingEnabled) {
                queue->expected_frame_id =
                    queue->expected_frame_id_without_led;
@@ -2980,6 +3474,15 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
                     new_buf->expected_frame = FALSE;
                     queue->expected_frame_id = buf_info->frame_idx + queue->attr.post_frame_skip;
                     queue->match_cnt++;
+                    LOGE("NX549J camera superdiag: comp matched single ch=0x%x "
+                            "frame=%u type=%d queue=%d match=%d expected=%u",
+                            ch_obj->my_hdl,
+                            new_buf->frame_idx,
+                            buf_info->buf != NULL ?
+                                    buf_info->buf->stream_type : -1,
+                            queue->que.size,
+                            queue->match_cnt,
+                            queue->expected_frame_id);
                     if (ch_obj->bundle.superbuf_queue.attr.enable_frame_sync) {
                         pthread_mutex_lock(&fs_lock);
                         mm_frame_sync_add(buf_info->frame_idx, ch_obj);
@@ -2993,8 +3496,29 @@ int32_t mm_channel_superbuf_comp_and_enqueue(
                     && (buf_info->buf->stream_type == CAM_STREAM_TYPE_METADATA)) {
                     new_buf->unmatched_meta_idx = buf_info->frame_idx;
                 }
+                if (buf_info->buf != NULL &&
+                        (buf_info->buf->stream_type != CAM_STREAM_TYPE_PREVIEW ||
+                         ch_obj->pending_cnt > 0)) {
+                    LOGE("NX549J camera superdiag: comp enqueue new ch=0x%x "
+                            "frame=%u type=%d slot=%u queue=%d match=%d "
+                            "expected=%u unmatched_meta=%u",
+                            ch_obj->my_hdl,
+                            new_buf->frame_idx,
+                            buf_info->buf->stream_type,
+                            buf_s_idx,
+                            queue->que.size,
+                            queue->match_cnt,
+                            queue->expected_frame_id,
+                            new_buf->unmatched_meta_idx);
+                }
             } else {
                 /* No memory */
+                LOGE("NX549J camera superdiag: comp alloc fail ch=0x%x "
+                        "stream_id=%u type=%d frame=%u",
+                        ch_obj->my_hdl,
+                        buf_info->stream_id,
+                        buf_info->buf != NULL ? buf_info->buf->stream_type : -1,
+                        buf_info->frame_idx);
                 if (NULL != new_buf) {
                     free(new_buf);
                 }
@@ -3032,9 +3556,60 @@ mm_channel_queue_node_t* mm_channel_superbuf_dequeue_internal(
     struct cam_list *head = NULL;
     struct cam_list *pos = NULL;
     mm_channel_queue_node_t* super_buf = NULL;
+    uint8_t i = 0;
 
     head = &queue->que.head.list;
     pos = head->next;
+    if ((matched_only == TRUE) &&
+            (queue->match_cnt > 0) &&
+            nx549j_camera_prop_enabled(
+                    "persist.camera.nx549j.skip_unmatched_head")) {
+        while (pos != head) {
+            node = member_of(pos, cam_node_t, list);
+            super_buf = (mm_channel_queue_node_t*)node->data;
+            if (NULL == super_buf) {
+                LOGE("NX549J camera superdiag: unmatched-head scan "
+                        "invalid node ch=0x%x queue=%d match=%d",
+                        ch_obj != NULL ? ch_obj->my_hdl : 0,
+                        queue->que.size,
+                        queue->match_cnt);
+                break;
+            }
+            if (super_buf->matched == TRUE) {
+                break;
+            }
+
+            LOGE("NX549J camera superdiag: drop unmatched head ch=0x%x "
+                    "frame=%u num=%u expected=%d queue_before=%d match=%d "
+                    "first0=%u first1=%u by "
+                    "persist.camera.nx549j.skip_unmatched_head=1",
+                    ch_obj != NULL ? ch_obj->my_hdl : 0,
+                    super_buf->frame_idx,
+                    super_buf->num_of_bufs,
+                    super_buf->expected_frame,
+                    queue->que.size,
+                    queue->match_cnt,
+                    super_buf->num_of_bufs > 0 ?
+                            super_buf->super_buf[0].frame_idx : 0,
+                    super_buf->num_of_bufs > 1 ?
+                            super_buf->super_buf[1].frame_idx : 0);
+
+            pos = pos->next;
+            for (i = 0; i < super_buf->num_of_bufs; i++) {
+                if (super_buf->super_buf[i].buf != NULL) {
+                    mm_channel_qbuf(ch_obj, super_buf->super_buf[i].buf);
+                }
+            }
+            cam_list_del_node(&node->list);
+            queue->que.size--;
+            free(node);
+            free(super_buf);
+        }
+
+        node = NULL;
+        super_buf = NULL;
+        pos = head->next;
+    }
     if (pos != head) {
         /* get the first node */
         node = member_of(pos, cam_node_t, list);
@@ -3042,11 +3617,35 @@ mm_channel_queue_node_t* mm_channel_superbuf_dequeue_internal(
         if ( (NULL != super_buf) &&
              (matched_only == TRUE) &&
              (super_buf->matched == FALSE) ) {
+            LOGE("NX549J camera superdiag: dequeue blocked ch=0x%x "
+                    "frame=%u num=%u matched=%d matched_only=%u "
+                    "queue=%d match=%d first0=%u first1=%u",
+                    ch_obj != NULL ? ch_obj->my_hdl : 0,
+                    super_buf->frame_idx,
+                    super_buf->num_of_bufs,
+                    super_buf->matched,
+                    matched_only,
+                    queue->que.size,
+                    queue->match_cnt,
+                    super_buf->num_of_bufs > 0 ?
+                            super_buf->super_buf[0].frame_idx : 0,
+                    super_buf->num_of_bufs > 1 ?
+                            super_buf->super_buf[1].frame_idx : 0);
             /* require to dequeue matched frame only, but this superbuf is not matched,
                simply set return ptr to NULL */
             super_buf = NULL;
         }
         if (NULL != super_buf) {
+            LOGE("NX549J camera superdiag: dequeue pop ch=0x%x "
+                    "frame=%u num=%u matched=%d matched_only=%u "
+                    "queue_before=%d match_before=%d",
+                    ch_obj != NULL ? ch_obj->my_hdl : 0,
+                    super_buf->frame_idx,
+                    super_buf->num_of_bufs,
+                    super_buf->matched,
+                    matched_only,
+                    queue->que.size,
+                    queue->match_cnt);
             /* remove from the queue */
             cam_list_del_node(&node->list);
             queue->que.size--;

@@ -16,4 +16,11 @@
 
    <!-- Enable system navigation keys. -->
    <bool name="config_supportSystemNavigationKeys">true</bool>
+
+   <!-- NOTE: tried overriding config_screen_rotation_fade_out/in/in_delay to kill
+        the 90-deg black flicker — BOTH 200/200/0 and 0/0/0 made it WORSE (longer,
+        landing on the animation). The rotation fade is NOT the lever; the black is
+        a deeper 90-deg resize/compositing artifact (the app surface is black during
+        relayout). Reverted to framework defaults (116/233/100). Do not touch these
+        again without a different root-cause. -->
 </resources>

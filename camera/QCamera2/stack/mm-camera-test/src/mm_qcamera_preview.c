@@ -777,7 +777,7 @@ mm_camera_stream_t * mm_app_add_preview_stream(mm_camera_test_obj_t *test_obj,
 
     abc.buffer_info.min_buffers = 10;
     abc.buffer_info.max_buffers = 10;
-    abc.is_type[0] = IS_TYPE_NONE;
+    abc.is_type = IS_TYPE_NONE;
 
     rc = setmetainfoCommand(test_obj, &abc);
     if (rc != MM_CAMERA_OK) {
@@ -852,7 +852,7 @@ mm_camera_stream_t * mm_app_add_raw_stream(mm_camera_test_obj_t *test_obj,
 
     abc.buffer_info.min_buffers = num_bufs;
     abc.buffer_info.max_buffers = num_bufs;
-    abc.is_type[0] = IS_TYPE_NONE;
+    abc.is_type = IS_TYPE_NONE;
 
     rc = setmetainfoCommand(test_obj, &abc);
     if (rc != MM_CAMERA_OK) {
@@ -928,7 +928,7 @@ mm_camera_stream_t * mm_app_add_ZSL_snapshot_stream(mm_camera_test_obj_t *test_o
 
     abc_snap.buffer_info.min_buffers = 7;
     abc_snap.buffer_info.max_buffers = 7;
-    abc_snap.is_type[0] = IS_TYPE_NONE;
+    abc_snap.is_type = IS_TYPE_NONE;
 
     rc = setmetainfoCommand(test_obj, &abc_snap);
     if (rc != MM_CAMERA_OK) {
@@ -1010,7 +1010,7 @@ mm_camera_stream_t * mm_app_add_snapshot_stream(mm_camera_test_obj_t *test_obj,
 
     abc_snap.buffer_info.min_buffers = 7;
     abc_snap.buffer_info.max_buffers = 7;
-    abc_snap.is_type[0] = IS_TYPE_NONE;
+    abc_snap.is_type = IS_TYPE_NONE;
 
     rc = setmetainfoCommand(test_obj, &abc_snap);
     if (rc != MM_CAMERA_OK) {

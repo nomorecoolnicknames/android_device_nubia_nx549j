@@ -482,7 +482,7 @@ mm_camera_stream_t * mm_app_add_video_stream(mm_camera_test_obj_t *test_obj,
 
     abc_snap.buffer_info.min_buffers = 7;
     abc_snap.buffer_info.max_buffers = 7;
-    abc_snap.is_type[0] = IS_TYPE_NONE;
+    abc_snap.is_type = IS_TYPE_NONE;
 
     rc = setmetainfoCommand(test_obj, &abc_snap);
     if (rc != MM_CAMERA_OK) {

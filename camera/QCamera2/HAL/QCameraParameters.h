@@ -1232,6 +1232,8 @@ private:
     bool m_bTruePortraitOn;
     cam_feature_mask_t m_nMinRequiredPpMask;
     cam_feature_mask_t mStreamPpMask[CAM_STREAM_TYPE_MAX];
+    cam_stream_size_info_t mNx549jLastPreviewStreamConfig;
+    bool mNx549jHasLastPreviewStreamConfig;
     int32_t m_nSharpness;
     int8_t mTotalPPCount;
     int8_t mCurPPCount;

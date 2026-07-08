@@ -81,6 +81,184 @@ extern pthread_mutex_t gCamLock;
 volatile uint32_t gCamHalLogLevel = 1;
 extern uint8_t gNumCameraSessions;
 
+static bool nx549jBringupPropEnabled(const char *name)
+{
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get(name, value, "0");
+    return atoi(value) > 0;
+}
+
+static bool nx549jBringupSkipPprocInit()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.force_bringup_skip_pproc_init");
+}
+
+static bool nx549jBringupSkipThermalFps()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.force_bringup_skip_thermal_fps");
+}
+
+static bool nx549jBringupSkipOis()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.force_bringup_skip_ois");
+}
+
+static bool nx549jBringupNoPp()
+{
+    return nx549jBringupPropEnabled("persist.camera.force_bringup_no_pp");
+}
+
+static bool nx549jBringupNoPpStreamType(cam_stream_type_t stream_type)
+{
+    switch (stream_type) {
+    case CAM_STREAM_TYPE_PREVIEW:
+    case CAM_STREAM_TYPE_POSTVIEW:
+    case CAM_STREAM_TYPE_SNAPSHOT:
+    case CAM_STREAM_TYPE_VIDEO:
+    case CAM_STREAM_TYPE_CALLBACK:
+    case CAM_STREAM_TYPE_IMPL_DEFINED:
+    case CAM_STREAM_TYPE_OFFLINE_PROC:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool nx549jBringupNoCppCds()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.force_bringup_no_cpp_cds") ||
+            nx549jBringupNoPp();
+}
+
+static bool nx549jBringupNoPostview()
+{
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get("persist.camera.force_bringup_no_postview", value,
+            nx549jBringupPropEnabled("persist.camera.force_bringup_preview") ?
+            "1" : "0");
+    return atoi(value) > 0;
+}
+
+static bool nx549jBringupCaptureNoMetadata()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_no_metadata");
+}
+
+static bool nx549jBringupCaptureNotifyBurst()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_notify_burst");
+}
+
+static bool nx549jBringupCaptureExplicitRequest()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_explicit_request");
+}
+
+static bool nx549jBringupCaptureSnapshotFirst()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_snapshot_first");
+}
+
+static bool nx549jBringupCaptureKeepPreview()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_keep_preview");
+}
+
+static bool nx549jBringupCaptureSkipDeclareStreams()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_skip_declare_streams");
+}
+
+static bool nx549jBringupCapturePrepareNoFlash()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_prepare_no_flash");
+}
+
+static bool nx549jBringupSkipFlashReservation()
+{
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get("persist.camera.nx549j.skip_flash_reservation", value, "1");
+    return atoi(value) > 0;
+}
+
+static bool nx549jBringupCaptureRequestStartZsl()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_request_start_zsl");
+}
+
+static bool nx549jBringupCaptureBlobOrder()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_blob_order");
+}
+
+static bool nx549jBringupCaptureSnapshotContinuous()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_snapshot_continuous");
+}
+
+static bool nx549jBringupCaptureSnapshotNoDynAlloc()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.capture_snapshot_no_dynalloc");
+}
+
+static bool nx549jBringupPreviewSnapshotStream()
+{
+    return nx549jBringupPropEnabled(
+            "persist.camera.nx549j.preview_snapshot_stream");
+}
+
+static const char *nx549jStreamTypeName(cam_stream_type_t streamType)
+{
+    switch (streamType) {
+    case CAM_STREAM_TYPE_DEFAULT:
+        return "DEFAULT";
+    case CAM_STREAM_TYPE_PREVIEW:
+        return "PREVIEW";
+    case CAM_STREAM_TYPE_POSTVIEW:
+        return "POSTVIEW";
+    case CAM_STREAM_TYPE_SNAPSHOT:
+        return "SNAPSHOT";
+    case CAM_STREAM_TYPE_VIDEO:
+        return "VIDEO";
+    case CAM_STREAM_TYPE_CALLBACK:
+        return "CALLBACK";
+    case CAM_STREAM_TYPE_IMPL_DEFINED:
+        return "IMPL_DEFINED";
+    case CAM_STREAM_TYPE_METADATA:
+        return "METADATA";
+    case CAM_STREAM_TYPE_RAW:
+        return "RAW";
+    case CAM_STREAM_TYPE_OFFLINE_PROC:
+        return "OFFLINE_PROC";
+    case CAM_STREAM_TYPE_PARM:
+        return "PARM";
+    case CAM_STREAM_TYPE_ANALYSIS:
+        return "ANALYSIS";
+    case CAM_STREAM_TYPE_MAX:
+        return "MAX";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 camera_device_ops_t QCamera2HardwareInterface::mCameraOps = {
     .set_preview_window =        QCamera2HardwareInterface::set_preview_window,
     .set_callbacks =             QCamera2HardwareInterface::set_CallBacks,
@@ -1863,11 +2041,17 @@ int QCamera2HardwareInterface::openCamera()
         return ALREADY_EXISTS;
     }
 
-    rc = QCameraFlash::getInstance().reserveFlashForCamera(mCameraId);
-    if (rc < 0) {
-        LOGE("Failed to reserve flash for camera id: %d",
-                mCameraId);
-        return UNKNOWN_ERROR;
+    if (nx549jBringupSkipFlashReservation()) {
+        LOGW("NX549J bringup: skip reserveFlashForCamera camera=%d "
+             "persist.camera.nx549j.skip_flash_reservation=1",
+             mCameraId);
+    } else {
+        rc = QCameraFlash::getInstance().reserveFlashForCamera(mCameraId);
+        if (rc < 0) {
+            LOGE("Failed to reserve flash for camera id: %d",
+                    mCameraId);
+            return UNKNOWN_ERROR;
+        }
     }
 
     // alloc param buffer
@@ -2293,7 +2477,11 @@ int QCamera2HardwareInterface::closeCamera()
         mExifParams.debug_params = NULL;
     }
 
-    if (QCameraFlash::getInstance().releaseFlashFromCamera(mCameraId) != 0) {
+    if (nx549jBringupSkipFlashReservation()) {
+        LOGW("NX549J bringup: skip releaseFlashFromCamera camera=%d "
+             "persist.camera.nx549j.skip_flash_reservation=1",
+             mCameraId);
+    } else if (QCameraFlash::getInstance().releaseFlashFromCamera(mCameraId) != 0) {
         LOGD("Failed to release flash for camera id: %d",
                 mCameraId);
     }
@@ -2531,6 +2719,13 @@ uint8_t QCamera2HardwareInterface::getBufNumRequired(cam_stream_type_t stream_ty
                     && (bufferCnt < persist_cnt)) {
                 bufferCnt = persist_cnt;
             }
+            property_get("persist.camera.force_bringup_preview_bufs", value, "0");
+            persist_cnt = atoi(value);
+            if ((persist_cnt > 0) && (persist_cnt < CAM_MAX_NUM_BUFS_PER_STREAM)) {
+                LOGW("NX549J bringup: forcing preview buffer count %d -> %d",
+                        bufferCnt, persist_cnt);
+                bufferCnt = persist_cnt;
+            }
         }
         break;
     case CAM_STREAM_TYPE_POSTVIEW:
@@ -2573,6 +2768,19 @@ uint8_t QCamera2HardwareInterface::getBufNumRequired(cam_stream_type_t stream_ty
 
                 if (bufferCnt > maxStreamBuf) {
                     bufferCnt = maxStreamBuf;
+                }
+            }
+
+            if (nx549jBringupNoPp() && !mParameters.isZSLMode() &&
+                    !mLongshotEnabled) {
+                property_get("persist.camera.force_bringup_snapshot_bufs",
+                        value, "3");
+                persist_cnt = atoi(value);
+                if ((persist_cnt > bufferCnt) &&
+                        (persist_cnt < CAM_MAX_NUM_BUFS_PER_STREAM)) {
+                    LOGW("NX549J bringup: forcing snapshot buffer count %d -> %d",
+                            bufferCnt, persist_cnt);
+                    bufferCnt = persist_cnt;
                 }
             }
         }
@@ -3027,9 +3235,6 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
     int rc = NO_ERROR;
     char value[PROPERTY_VALUE_MAX];
     bool raw_yuv = false;
-    int32_t dt = 0;
-    int32_t vc = 0;
-
 
     QCameraHeapMemory *streamInfoBuf = new QCameraHeapMemory(QCAMERA_ION_USE_CACHE);
     if (!streamInfoBuf) {
@@ -3067,6 +3272,20 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
                         - mParameters.getNumOfExtraHDROutBufsIfNeeded()
                         + mParameters.getNumOfExtraBuffersForImageProc());
         }
+        if (!mParameters.isZSLMode() && !mLongshotEnabled &&
+                nx549jBringupCaptureSnapshotContinuous()) {
+            LOGW("NX549J bringup: force non-ZSL snapshot stream continuous "
+                    "mode=%d burst=%u -> mode=%d burst=0 by "
+                    "persist.camera.nx549j.capture_snapshot_continuous=1 "
+                    "recordingHint=%d numSnapshots=%u",
+                    streamInfo->streaming_mode,
+                    streamInfo->num_of_burst,
+                    CAM_STREAMING_MODE_CONTINUOUS,
+                    mParameters.getRecordingHintValue(),
+                    mParameters.getNumOfSnapshots());
+            streamInfo->streaming_mode = CAM_STREAMING_MODE_CONTINUOUS;
+            streamInfo->num_of_burst = 0;
+        }
         break;
     case CAM_STREAM_TYPE_RAW:
         property_get("persist.camera.raw_yuv", value, "0");
@@ -3082,13 +3301,6 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
         } else {
             streamInfo->is_secure = NON_SECURE;
         }
-        if (CAM_FORMAT_META_RAW_10BIT == streamInfo->fmt) {
-            mParameters.updateDtVc(&dt, &vc);
-            if (dt)
-                streamInfo->dt = dt;
-            streamInfo->vc = vc;
-        }
-
         break;
     case CAM_STREAM_TYPE_POSTVIEW:
         if (mLongshotEnabled) {
@@ -3152,6 +3364,16 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
 
     // Get feature mask
     mParameters.getStreamPpMask(stream_type, streamInfo->pp_config.feature_mask);
+    if (nx549jBringupNoCppCds() &&
+            (streamInfo->pp_config.feature_mask &
+            (CAM_QCOM_FEATURE_CDS | CAM_QCOM_FEATURE_DSDN))) {
+        LOGW("NX549J bringup: mask streamInfo CPP CDS/DSDN type %d pp_config 0x%llx -> 0x%llx",
+                stream_type, streamInfo->pp_config.feature_mask,
+                streamInfo->pp_config.feature_mask &
+                ~(CAM_QCOM_FEATURE_CDS | CAM_QCOM_FEATURE_DSDN));
+        streamInfo->pp_config.feature_mask &=
+                ~(CAM_QCOM_FEATURE_CDS | CAM_QCOM_FEATURE_DSDN);
+    }
 
     // Update pp config
     if (streamInfo->pp_config.feature_mask & CAM_QCOM_FEATURE_FLIP) {
@@ -3181,6 +3403,13 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
         if (gCamCapability[mCameraId]->qcom_supported_feature_mask &
                 CAM_QCOM_FEATURE_SCALE)
             streamInfo->pp_config.feature_mask |= CAM_QCOM_FEATURE_SCALE;
+    }
+
+    if (nx549jBringupNoPp() &&
+            nx549jBringupNoPpStreamType(stream_type)) {
+        LOGW("NX549J bringup: forcing streamInfo type %d pp_config 0x%llx -> 0",
+                stream_type, streamInfo->pp_config.feature_mask);
+        streamInfo->pp_config.feature_mask = CAM_QCOM_FEATURE_NONE;
     }
 
     LOGH("type %d, fmt %d, dim %dx%d, num_bufs %d mask = 0x%x is_type %d\n",
@@ -3546,7 +3775,10 @@ int QCamera2HardwareInterface::startPreview()
 
     // if job id is non-zero, that means the postproc init job is already
     // pending or complete
-    if (mInitPProcJob == 0) {
+    if (mInitPProcJob == 0 && nx549jBringupSkipPprocInit()) {
+        LOGW("NX549J bringup: skip deferred postprocessor init by "
+                "persist.camera.force_bringup_skip_pproc_init=1");
+    } else if (mInitPProcJob == 0) {
         mInitPProcJob = deferPPInit();
         if (mInitPProcJob == 0) {
             LOGE("Unable to initialize postprocessor, mCameraHandle = %p",
@@ -3603,6 +3835,11 @@ int QCamera2HardwareInterface::startPreview()
 int32_t QCamera2HardwareInterface::updatePostPreviewParameters() {
     // Enable OIS only in Camera mode and 4k2k camcoder mode
     int32_t rc = NO_ERROR;
+    if (nx549jBringupSkipOis()) {
+        LOGW("NX549J bringup: skip post-preview OIS set_parms by "
+                "persist.camera.force_bringup_skip_ois=1");
+        return NO_ERROR;
+    }
     rc = mParameters.updateOisValue(1);
     return NO_ERROR;
 }
@@ -4553,6 +4790,33 @@ int QCamera2HardwareInterface::takePicture()
     }
     LOGI("snap count = %d zsl = %d advanced = %d",
             numSnapshots, mParameters.isZSLMode(), mAdvancedCaptureConfigured);
+    LOGW("NX549J bringup: takePicture path zsl=%d longshot=%d "
+            "offlineRAW=%d jpeg=%d nv16=%d nv21=%d no_pp=%d "
+            "no_postview=%d no_meta=%d burst_notify=%d explicit_req=%d "
+            "keep_preview=%d skip_declare=%d prep_no_flash=%d "
+            "req_start_zsl=%d "
+            "flashNeeded=%d flashConfigured=%d "
+            "recordingHint=%d num=%u retro=%u",
+            mParameters.isZSLMode(),
+            mLongshotEnabled,
+            mParameters.getofflineRAW(),
+            mParameters.isJpegPictureFormat(),
+            mParameters.isNV16PictureFormat(),
+            mParameters.isNV21PictureFormat(),
+            nx549jBringupNoPp(),
+            nx549jBringupNoPostview(),
+            nx549jBringupCaptureNoMetadata(),
+            nx549jBringupCaptureNotifyBurst(),
+            nx549jBringupCaptureExplicitRequest(),
+            nx549jBringupCaptureKeepPreview(),
+            nx549jBringupCaptureSkipDeclareStreams(),
+            nx549jBringupCapturePrepareNoFlash(),
+            nx549jBringupCaptureRequestStartZsl(),
+            mFlashNeeded,
+            mFlashConfigured,
+            mParameters.getRecordingHintValue(),
+            numSnapshots,
+            numRetroSnapshots);
 
     if (mParameters.isZSLMode()) {
         QCameraChannel *pChannel = m_channels[QCAMERA_CH_TYPE_ZSL];
@@ -4710,14 +4974,51 @@ int QCamera2HardwareInterface::takePicture()
         if (mParameters.isJpegPictureFormat() ||
                 mParameters.isNV16PictureFormat() ||
                 mParameters.isNV21PictureFormat()) {
+            bool captureBlobOrder = nx549jBringupCaptureBlobOrder();
+            bool captureKeepPreviewProp = nx549jBringupCaptureKeepPreview();
+            bool captureKeepPreview = captureKeepPreviewProp && !captureBlobOrder;
+            bool captureSkipDeclareProp =
+                    nx549jBringupCaptureSkipDeclareStreams();
+            bool captureSkipDeclare =
+                    captureSkipDeclareProp && !captureBlobOrder;
+
+            LOGW("NX549J bringup: non-ZSL capture path blob_order=%d "
+                    "keep_preview_prop=%d keep_preview=%d "
+                    "skip_declare_prop=%d skip_declare=%d "
+                    "prepare_no_flash=%d request_start_zsl=%d",
+                    captureBlobOrder,
+                    captureKeepPreviewProp,
+                    captureKeepPreview,
+                    captureSkipDeclareProp,
+                    captureSkipDeclare,
+                    nx549jBringupCapturePrepareNoFlash(),
+                    nx549jBringupCaptureRequestStartZsl());
 
             //STOP Preview for Non ZSL use case
-            stopPreview();
+            if (captureKeepPreview) {
+                LOGW("NX549J bringup: keep preview running for non-ZSL "
+                        "capture by persist.camera.nx549j.capture_keep_preview=1");
+            } else {
+                if (captureBlobOrder && captureKeepPreviewProp) {
+                    LOGW("NX549J bringup: blob-order overrides "
+                            "capture_keep_preview=1");
+                }
+                stopPreview();
+            }
 
             //Config CAPTURE channels
-            rc = declareSnapshotStreams();
-            if (NO_ERROR != rc) {
-                return rc;
+            if (captureSkipDeclare) {
+                LOGW("NX549J bringup: skip capture stream declare by "
+                        "persist.camera.nx549j.capture_skip_declare_streams=1");
+            } else {
+                if (captureBlobOrder && captureSkipDeclareProp) {
+                    LOGW("NX549J bringup: blob-order overrides "
+                            "capture_skip_declare_streams=1");
+                }
+                rc = declareSnapshotStreams();
+                if (NO_ERROR != rc) {
+                    return rc;
+                }
             }
 
             rc = addCaptureChannel();
@@ -4761,6 +5062,38 @@ int QCamera2HardwareInterface::takePicture()
                     return -ENOMEM;
                 }
 
+                QCameraPicChannel *pCapChannel =
+                    (QCameraPicChannel *)m_channels[QCAMERA_CH_TYPE_CAPTURE];
+                bool explicitRequest = nx549jBringupCaptureExplicitRequest();
+                bool ubiFocus = mParameters.isUbiFocusEnabled();
+                bool ubiRefocus = mParameters.isUbiRefocus();
+                bool chromaFlash = mParameters.isChromaFlashEnabled();
+                bool advancedCapture = ubiFocus || ubiRefocus || chromaFlash;
+                if (advancedCapture && explicitRequest) {
+                    LOGW("NX549J bringup: force normal explicit capture "
+                            "over advanced path ubi=%d refocus=%d chroma=%d "
+                            "by persist.camera.nx549j.capture_explicit_request=1",
+                            ubiFocus, ubiRefocus, chromaFlash);
+                    advancedCapture = false;
+                } else {
+                    LOGW("NX549J bringup: capture mode advanced=%d ubi=%d "
+                            "refocus=%d chroma=%d explicit_request=%d",
+                            advancedCapture, ubiFocus, ubiRefocus, chromaFlash,
+                            explicitRequest);
+                }
+                if ((NULL != pCapChannel) &&
+                        !advancedCapture &&
+                        captureBlobOrder) {
+                    LOGW("NX549J bringup: blob-order prepareHardwareForSnapshot "
+                            "before capture start ch=0x%x by "
+                            "persist.camera.nx549j.capture_blob_order=1",
+                            pCapChannel->getMyHandle());
+                    int32_t prepRc = prepareHardwareForSnapshot(0);
+                    LOGW("NX549J bringup: blob-order "
+                            "prepareHardwareForSnapshot done ch=0x%x rc=%d",
+                            pCapChannel->getMyHandle(), prepRc);
+                }
+
                 // start catpure channel
                 rc =  m_channels[QCAMERA_CH_TYPE_CAPTURE]->start();
                 if (rc != NO_ERROR) {
@@ -4777,15 +5110,51 @@ int QCamera2HardwareInterface::takePicture()
                     return rc;
                 }
 
-                QCameraPicChannel *pCapChannel =
-                    (QCameraPicChannel *)m_channels[QCAMERA_CH_TYPE_CAPTURE];
                 if (NULL != pCapChannel) {
-                    if (mParameters.isUbiFocusEnabled() ||
-                            mParameters.isUbiRefocus() ||
-                            mParameters.isChromaFlashEnabled()) {
+                    if (!advancedCapture &&
+                            nx549jBringupCapturePrepareNoFlash() &&
+                            !captureBlobOrder) {
+                        LOGW("NX549J bringup: force prepareHardwareForSnapshot "
+                                "for non-flash capture ch=0x%x by "
+                                "persist.camera.nx549j.capture_prepare_no_flash=1",
+                                pCapChannel->getMyHandle());
+                        int32_t prepRc = prepareHardwareForSnapshot(0);
+                        LOGW("NX549J bringup: force prepareHardwareForSnapshot "
+                                "done ch=0x%x rc=%d",
+                                pCapChannel->getMyHandle(), prepRc);
+                    }
+                    if (advancedCapture) {
                         rc = startAdvancedCapture(pCapChannel);
                         if (rc != NO_ERROR) {
                             LOGE("cannot start advanced capture");
+                            return rc;
+                        }
+                    } else if (explicitRequest) {
+                        mm_camera_req_buf_t buf;
+                        memset(&buf, 0x0, sizeof(buf));
+                        buf.type = MM_CAMERA_REQ_SUPER_BUF;
+                        buf.num_buf_requested = numSnapshots;
+                        buf.num_retro_buf_requested = numRetroSnapshots;
+                        LOGW("NX549J bringup: explicit normal capture "
+                                "request_super_buf ch=0x%x num=%u retro=%u "
+                                "notify_burst=%d no_meta=%d",
+                                pCapChannel->getMyHandle(),
+                                buf.num_buf_requested,
+                                buf.num_retro_buf_requested,
+                                nx549jBringupCaptureNotifyBurst(),
+                                nx549jBringupCaptureNoMetadata());
+                        rc = pCapChannel->takePicture(&buf);
+                        if (rc != NO_ERROR) {
+                            LOGE("cannot request explicit normal capture");
+                            if (NO_ERROR != waitDeferredWork(mReprocJob)) {
+                                LOGE("Reprocess Deferred work failed");
+                                return UNKNOWN_ERROR;
+                            }
+                            if (NO_ERROR != waitDeferredWork(mJpegJob)) {
+                                LOGE("Jpeg Deferred work failed");
+                                return UNKNOWN_ERROR;
+                            }
+                            delChannel(QCAMERA_CH_TYPE_CAPTURE);
                             return rc;
                         }
                     }
@@ -4921,8 +5290,22 @@ int32_t QCamera2HardwareInterface::declareSnapshotStreams()
 {
     int rc = NO_ERROR;
 
+    LOGW("NX549J bringup: declareSnapshotStreams begin longshot=%d "
+            "zsl=%d offlineRAW=%d jpeg=%d nv16=%d nv21=%d "
+            "no_pp=%d no_postview=%d session=%p",
+            mLongshotEnabled,
+            mParameters.isZSLMode(),
+            mParameters.getofflineRAW(),
+            mParameters.isJpegPictureFormat(),
+            mParameters.isNV16PictureFormat(),
+            mParameters.isNV21PictureFormat(),
+            nx549jBringupNoPp(),
+            nx549jBringupNoPostview(),
+            sessionId);
+
     // Update stream info configuration
     rc = mParameters.setStreamConfigure(true, mLongshotEnabled, false, sessionId);
+    LOGW("NX549J bringup: declareSnapshotStreams done rc=%d", rc);
     if (rc != NO_ERROR) {
         LOGE("setStreamConfigure failed %d", rc);
         return rc;
@@ -6289,8 +6672,8 @@ int32_t QCamera2HardwareInterface::processAutoFocusEvent(cam_auto_focus_data_t &
         return ret;
     }
     cam_focus_mode_type focusMode = mParameters.getFocusMode();
-    LOGH("[AF_DBG]  focusMode=%d, focusState=%d isDepth=%d",
-             focusMode, focus_data.focus_state, focus_data.isDepth);
+    LOGH("[AF_DBG]  focusMode=%d, focusState=%d",
+             focusMode, focus_data.focus_state);
 
     switch (focusMode) {
     case CAM_FOCUS_MODE_AUTO:
@@ -6357,12 +6740,6 @@ int32_t QCamera2HardwareInterface::processAutoFocusEvent(cam_auto_focus_data_t &
         if (((focus_data.focus_state == CAM_AF_STATE_PASSIVE_FOCUSED) ||
                 (focus_data.focus_state == CAM_AF_STATE_PASSIVE_UNFOCUSED) ||
                 (focus_data.focus_state == CAM_AF_STATE_PASSIVE_SCAN)) && mActiveAF) {
-            break;
-        }
-
-        if (!bDepthAFCallbacks && focus_data.isDepth &&
-                (focus_data.focus_state == CAM_AF_STATE_PASSIVE_SCAN)) {
-            LOGD("Skip sending scan state to app, if depth focus");
             break;
         }
 
@@ -6981,6 +7358,14 @@ int32_t QCamera2HardwareInterface::addStreamToChannel(QCameraChannel *pChannel,
 {
     int32_t rc = NO_ERROR;
 
+    if (streamType == CAM_STREAM_TYPE_METADATA &&
+            nx549jBringupPropEnabled("persist.camera.force_bringup_no_metadata")) {
+        LOGE("NX549J bringup: skip metadata stream by "
+                "persist.camera.force_bringup_no_metadata=1 ch=0x%x",
+                pChannel != NULL ? pChannel->getMyHandle() : 0);
+        return NO_ERROR;
+    }
+
     if (streamType == CAM_STREAM_TYPE_RAW) {
         prepareRawStream(pChannel);
     }
@@ -6989,10 +7374,30 @@ int32_t QCamera2HardwareInterface::addStreamToChannel(QCameraChannel *pChannel,
         LOGE("no mem for stream info buf");
         return NO_MEMORY;
     }
+    cam_stream_info_t *streamInfo =
+            (cam_stream_info_t *)pStreamInfo->getPtr(0);
+    if (nx549jBringupNoPp() &&
+            streamInfo != NULL &&
+            streamInfo->pp_config.feature_mask != CAM_QCOM_FEATURE_NONE &&
+            nx549jBringupNoPpStreamType(streamType)) {
+        LOGW("NX549J bringup: forcing addStream type %d pp_config 0x%llx -> 0",
+                streamType, streamInfo->pp_config.feature_mask);
+        streamInfo->pp_config.feature_mask = CAM_QCOM_FEATURE_NONE;
+    }
     uint8_t minStreamBufNum = getBufNumRequired(streamType);
     bool bDynAllocBuf = false;
     if (isZSLMode() && streamType == CAM_STREAM_TYPE_SNAPSHOT) {
         bDynAllocBuf = true;
+    }
+    if (streamType == CAM_STREAM_TYPE_SNAPSHOT &&
+            bDynAllocBuf &&
+            nx549jBringupCaptureSnapshotNoDynAlloc()) {
+        LOGW("NX549J bringup: disable snapshot dynalloc by "
+                "persist.camera.nx549j.capture_snapshot_no_dynalloc=1 "
+                "min_bufs=%u stream_num_bufs=%d",
+                minStreamBufNum,
+                streamInfo != NULL ? streamInfo->num_bufs : -1);
+        bDynAllocBuf = false;
     }
 
     cam_padding_info_t padding_info;
@@ -7031,8 +7436,23 @@ int32_t QCamera2HardwareInterface::addStreamToChannel(QCameraChannel *pChannel,
     }
 
     bool deferAllocation = needDeferred(streamType);
-    LOGD("deferAllocation = %d bDynAllocBuf = %d, stream type = %d",
-            deferAllocation, bDynAllocBuf, streamType);
+    LOGE("NX549J bringup: addStreamToChannel begin ch=0x%x type=%d/%s "
+            "fmt=%d dim=%dx%d num_bufs=%d pp=0x%llx min_bufs=%u "
+            "dyn=%d defer=%d no_metadata=%d no_pp=%d no_display=%d",
+            pChannel != NULL ? pChannel->getMyHandle() : 0,
+            streamType,
+            nx549jStreamTypeName(streamType),
+            streamInfo != NULL ? streamInfo->fmt : -1,
+            streamInfo != NULL ? streamInfo->dim.width : -1,
+            streamInfo != NULL ? streamInfo->dim.height : -1,
+            streamInfo != NULL ? streamInfo->num_bufs : -1,
+            streamInfo != NULL ? streamInfo->pp_config.feature_mask : 0,
+            minStreamBufNum,
+            bDynAllocBuf,
+            deferAllocation,
+            nx549jBringupPropEnabled("persist.camera.force_bringup_no_metadata"),
+            nx549jBringupPropEnabled("persist.camera.force_bringup_no_pp"),
+            isNoDisplayMode());
     rc = pChannel->addStream(*this,
             pStreamInfo,
             NULL,
@@ -7043,10 +7463,16 @@ int32_t QCamera2HardwareInterface::addStreamToChannel(QCameraChannel *pChannel,
             deferAllocation);
 
     if (rc != NO_ERROR) {
-        LOGE("add stream type (%d) failed, ret = %d",
-               streamType, rc);
+        LOGE("add stream type (%d/%s) failed, ret = %d",
+               streamType, nx549jStreamTypeName(streamType), rc);
         return rc;
     }
+
+    LOGE("NX549J bringup: addStreamToChannel done ch=0x%x type=%d/%s rc=%d",
+            pChannel != NULL ? pChannel->getMyHandle() : 0,
+            streamType,
+            nx549jStreamTypeName(streamType),
+            rc);
 
     return rc;
 }
@@ -7068,6 +7494,8 @@ int32_t QCamera2HardwareInterface::addPreviewChannel()
     QCameraChannel *pChannel = NULL;
     char value[PROPERTY_VALUE_MAX];
     bool raw_yuv = false;
+    bool disable_analysis_stream = false;
+    bool enable_analysis_stream = false;
 
 
     if (m_channels[QCAMERA_CH_TYPE_PREVIEW] != NULL) {
@@ -7123,7 +7551,25 @@ int32_t QCamera2HardwareInterface::addPreviewChannel()
         return rc;
     }
 
-    if (((mParameters.fdModeInVideo())
+    if (nx549jBringupPreviewSnapshotStream()) {
+        LOGW("NX549J bringup: pre-arm preview-channel snapshot stream by "
+                "persist.camera.nx549j.preview_snapshot_stream=1");
+        rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_SNAPSHOT,
+                                NULL, NULL);
+        if (rc != NO_ERROR) {
+            LOGE("pre-arm preview snapshot stream failed, ret = %d", rc);
+            delete pChannel;
+            return rc;
+        }
+    }
+
+    property_get("persist.camera.disable_analysis_stream", value, "1");
+    disable_analysis_stream = atoi(value) > 0 ? true : false;
+    property_get("persist.camera.enable_analysis_stream", value, "0");
+    enable_analysis_stream = atoi(value) > 0 ? true : false;
+    if (disable_analysis_stream) {
+        LOGW("analysis stream disabled by persist.camera.disable_analysis_stream");
+    } else if (enable_analysis_stream && ((mParameters.fdModeInVideo())
             || (mParameters.getDcrf() == true)
             || (mParameters.getRecordingHintValue() != true))
             && (!mParameters.isSecureMode())) {
@@ -7374,6 +7820,7 @@ int32_t QCamera2HardwareInterface::addZSLChannel()
     QCameraPicChannel *pChannel = NULL;
     char value[PROPERTY_VALUE_MAX];
     bool raw_yuv = false;
+    bool enable_analysis_stream = false;
 
     if (m_channels[QCAMERA_CH_TYPE_ZSL] != NULL) {
         // if we had ZSL channel before, delete it first
@@ -7455,7 +7902,9 @@ int32_t QCamera2HardwareInterface::addZSLChannel()
         return rc;
     }
 
-    if (!mParameters.isSecureMode()) {
+    property_get("persist.camera.enable_analysis_stream", value, "0");
+    enable_analysis_stream = atoi(value) > 0 ? true : false;
+    if (enable_analysis_stream && !mParameters.isSecureMode()) {
         rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_ANALYSIS,
                 NULL, this);
         if (rc != NO_ERROR) {
@@ -7519,14 +7968,46 @@ int32_t QCamera2HardwareInterface::addCaptureChannel()
     // Capture channel, only need snapshot and postview streams start together
     mm_camera_channel_attr_t attr;
     memset(&attr, 0, sizeof(mm_camera_channel_attr_t));
+    bool captureNoMetadata =
+            nx549jBringupCaptureNoMetadata() && !mLongshotEnabled;
+    bool captureSnapshotFirst =
+            nx549jBringupCaptureSnapshotFirst() &&
+            !mLongshotEnabled &&
+            !mParameters.getofflineRAW();
     if ( mLongshotEnabled ) {
         attr.notify_mode = MM_CAMERA_SUPER_BUF_NOTIFY_BURST;
         attr.look_back = mParameters.getZSLBackLookCount();
         attr.water_mark = mParameters.getZSLQueueDepth();
+    } else if (nx549jBringupCaptureNotifyBurst()) {
+        LOGW("NX549J bringup: forcing capture notify mode BURST by "
+                "persist.camera.nx549j.capture_notify_burst=1");
+        attr.notify_mode = MM_CAMERA_SUPER_BUF_NOTIFY_BURST;
     } else {
         attr.notify_mode = MM_CAMERA_SUPER_BUF_NOTIFY_CONTINUOUS;
     }
     attr.max_unmatched_frames = mParameters.getMaxUnmatchedFramesInQueue();
+    LOGW("NX549J bringup: addCaptureChannel attr longshot=%d "
+            "zsl=%d offlineRAW=%d jpeg=%d nv16=%d nv21=%d quadra=%d "
+            "no_pp=%d no_postview=%d no_meta=%d burst_notify=%d "
+            "snapshot_first=%d notify=%d look_back=%d "
+            "post_skip=%d water=%d max_unmatched=%d",
+            mLongshotEnabled,
+            mParameters.isZSLMode(),
+            mParameters.getofflineRAW(),
+            mParameters.isJpegPictureFormat(),
+            mParameters.isNV16PictureFormat(),
+            mParameters.isNV21PictureFormat(),
+            mParameters.getQuadraCfa(),
+            nx549jBringupNoPp(),
+            nx549jBringupNoPostview(),
+            nx549jBringupCaptureNoMetadata(),
+            nx549jBringupCaptureNotifyBurst(),
+            captureSnapshotFirst,
+            attr.notify_mode,
+            attr.look_back,
+            attr.post_frame_skip,
+            attr.water_mark,
+            attr.max_unmatched_frames);
 
     rc = pChannel->init(&attr,
                         capture_channel_cb_routine,
@@ -7537,13 +8018,32 @@ int32_t QCamera2HardwareInterface::addCaptureChannel()
         return rc;
     }
 
-    // meta data stream always coexists with snapshot in regular capture case
-    rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_METADATA,
-                            metadata_stream_cb_routine, this);
-    if (rc != NO_ERROR) {
-        LOGE("add metadata stream failed, ret = %d", rc);
-        delete pChannel;
-        return rc;
+    if (captureSnapshotFirst) {
+        LOGW("NX549J bringup: add capture snapshot before metadata by "
+                "persist.camera.nx549j.capture_snapshot_first=1");
+        rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_SNAPSHOT,
+                NULL, this);
+        if (rc != NO_ERROR) {
+            LOGE("add snapshot-first stream failed, ret = %d", rc);
+            delete pChannel;
+            return rc;
+        }
+    }
+
+    // DIAGNOSTIC/ISOLATION: default keeps stock metadata.  This prop tests
+    // whether NX549J's non-ZSL capture graph is blocked by the metadata stream.
+    if (captureNoMetadata) {
+        LOGW("NX549J bringup: skip capture metadata stream by "
+                "persist.camera.nx549j.capture_no_metadata=1");
+    } else {
+        // meta data stream always coexists with snapshot in regular capture case
+        rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_METADATA,
+                                metadata_stream_cb_routine, this);
+        if (rc != NO_ERROR) {
+            LOGE("add metadata stream failed, ret = %d", rc);
+            delete pChannel;
+            return rc;
+        }
     }
 
     if (mLongshotEnabled) {
@@ -7560,6 +8060,9 @@ int32_t QCamera2HardwareInterface::addCaptureChannel()
                 synchronous_stream_cb_routine);
         }
     //Not adding the postview stream to the capture channel if Quadra CFA is enabled.
+    } else if (!mParameters.getQuadraCfa() && nx549jBringupNoPostview()) {
+        LOGW("NX549J bringup: skip postview stream by "
+                "persist.camera.force_bringup_no_postview=1");
     } else if (!mParameters.getQuadraCfa()) {
         rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_POSTVIEW,
                                 NULL, this);
@@ -7571,7 +8074,7 @@ int32_t QCamera2HardwareInterface::addCaptureChannel()
         }
     }
 
-    if (!mParameters.getofflineRAW()) {
+    if (!mParameters.getofflineRAW() && !captureSnapshotFirst) {
         rc = addStreamToChannel(pChannel, CAM_STREAM_TYPE_SNAPSHOT,
                 NULL, this);
         if (rc != NO_ERROR) {
@@ -7667,6 +8170,13 @@ int32_t QCamera2HardwareInterface::addCallbackChannel()
 {
     int32_t rc = NO_ERROR;
     QCameraChannel *pChannel = NULL;
+    char value[PROPERTY_VALUE_MAX];
+
+    property_get("persist.camera.disable_callback_stream", value, "1");
+    if (atoi(value) > 0) {
+        LOGW("callback stream disabled by persist.camera.disable_callback_stream");
+        return NO_ERROR;
+    }
 
     if (m_channels[QCAMERA_CH_TYPE_CALLBACK] != NULL) {
         delete m_channels[QCAMERA_CH_TYPE_CALLBACK];
@@ -7783,6 +8293,16 @@ int32_t QCamera2HardwareInterface::getPPConfig(cam_pp_feature_config_t &pp_confi
 
     pp_config.cur_reproc_count = curIndex + 1;
     pp_config.total_reproc_count = mParameters.getReprocCount();
+
+    if (nx549jBringupNoPp()) {
+        LOGW("NX549J bringup: force getPPConfig no_pp curIndex=%d "
+                "multipass=%d old=0x%llx",
+                curIndex, multipass, pp_config.feature_mask);
+        memset(&pp_config, 0, sizeof(pp_config));
+        pp_config.cur_reproc_count = curIndex + 1;
+        pp_config.total_reproc_count = mParameters.getReprocCount();
+        return NO_ERROR;
+    }
 
     //Checking what feature mask to enable
     if (curIndex == 0) {
@@ -7916,7 +8436,8 @@ int32_t QCamera2HardwareInterface::getPPConfig(cam_pp_feature_config_t &pp_confi
                 pp_config.feature_mask |= CAM_OEM_FEATURE_1;
             }
 
-            if (mParameters.getCDSMode() != CAM_CDS_MODE_OFF) {
+            if (!nx549jBringupNoCppCds() &&
+                    mParameters.getCDSMode() != CAM_CDS_MODE_OFF) {
                 if (feature_mask & CAM_QCOM_FEATURE_DSDN) {
                     pp_config.feature_mask |= CAM_QCOM_FEATURE_DSDN;
                 } else {
@@ -7964,7 +8485,8 @@ int32_t QCamera2HardwareInterface::getPPConfig(cam_pp_feature_config_t &pp_confi
                     pp_config.rotation = ROTATE_270;
                 }
             }
-            if (mParameters.getCDSMode() != CAM_CDS_MODE_OFF) {
+            if (!nx549jBringupNoCppCds() &&
+                    mParameters.getCDSMode() != CAM_CDS_MODE_OFF) {
                 if (feature_mask & CAM_QCOM_FEATURE_DSDN) {
                     pp_config.feature_mask |= CAM_QCOM_FEATURE_DSDN;
                 } else {
@@ -8842,25 +9364,7 @@ int32_t QCamera2HardwareInterface::processHistogramStats(
 
     switch (stats_data.type) {
     case CAM_HISTOGRAM_TYPE_BAYER:
-        switch (stats_data.bayer_stats.data_type) {
-            case CAM_STATS_CHANNEL_Y:
-            case CAM_STATS_CHANNEL_R:
-                *pHistData = stats_data.bayer_stats.r_stats;
-                break;
-            case CAM_STATS_CHANNEL_GR:
-                *pHistData = stats_data.bayer_stats.gr_stats;
-                break;
-            case CAM_STATS_CHANNEL_GB:
-            case CAM_STATS_CHANNEL_ALL:
-                *pHistData = stats_data.bayer_stats.gb_stats;
-                break;
-            case CAM_STATS_CHANNEL_B:
-                *pHistData = stats_data.bayer_stats.b_stats;
-                break;
-            default:
-                *pHistData = stats_data.bayer_stats.r_stats;
-                break;
-        }
+        *pHistData = stats_data.bayer_stats.gb_stats;
         break;
     case CAM_HISTOGRAM_TYPE_YUV:
         *pHistData = stats_data.yuv_stats;
@@ -9116,9 +9620,17 @@ int QCamera2HardwareInterface::updateThermalLevel(void *thermal_level)
             adjustedRange, skipPattern, value );
     mThermalLevel = level;
 
-    if (thermalMode == QCAMERA_THERMAL_ADJUST_FPS)
+    if (thermalMode == QCAMERA_THERMAL_ADJUST_FPS) {
+        if (nx549jBringupSkipThermalFps()) {
+            LOGW("NX549J bringup: skip thermal FPS set_parms by "
+                    "persist.camera.force_bringup_skip_thermal_fps=1 "
+                    "level=%d range=%3.2f,%3.2f video=%3.2f,%3.2f",
+                    level, adjustedRange.min_fps, adjustedRange.max_fps,
+                    adjustedRange.video_min_fps, adjustedRange.video_max_fps);
+            return NO_ERROR;
+        }
         ret = mParameters.adjustPreviewFpsRange(&adjustedRange);
-    else if (thermalMode == QCAMERA_THERMAL_ADJUST_FRAMESKIP)
+    } else if (thermalMode == QCAMERA_THERMAL_ADJUST_FRAMESKIP)
         ret = mParameters.setFrameSkip(skipPattern);
     else
         LOGW("Incorrect thermal mode %d", thermalMode);
@@ -9278,6 +9790,14 @@ bool QCamera2HardwareInterface::needReprocess()
         return false;
     }
 
+    if (nx549jBringupNoPp()) {
+        LOGW("NX549J bringup: force needReprocess false by "
+                "persist.camera.force_bringup_no_pp=1 jpeg=%d nv21=%d",
+                mParameters.isJpegPictureFormat(),
+                mParameters.isNV21PictureFormat());
+        return false;
+    }
+
     //Disable reprocess for small jpeg size or 4K liveshot case but enable if lowpower mode
     if ((mParameters.is4k2kVideoResolution() && mParameters.getRecordingHintValue()
             && !isLowPowerMode()) || mParameters.isSmallJpegSizeEnabled()) {
@@ -9316,6 +9836,12 @@ bool QCamera2HardwareInterface::needRotationReprocess()
     if (!mParameters.isJpegPictureFormat() &&
         !mParameters.isNV21PictureFormat()) {
         // RAW image, no need to reprocess
+        return false;
+    }
+
+    if (nx549jBringupNoPp()) {
+        LOGW("NX549J bringup: force needRotationReprocess false by "
+                "persist.camera.force_bringup_no_pp=1");
         return false;
     }
 
@@ -9869,6 +10395,11 @@ void *QCamera2HardwareInterface::deferredWorkRoutine(void *obj)
                     break;
                 case CMD_DEF_PPROC_START:
                     {
+                        if (nx549jBringupSkipPprocInit()) {
+                            LOGW("NX549J bringup: skip deferred pproc start by "
+                                    "persist.camera.force_bringup_skip_pproc_init=1");
+                            break;
+                        }
                         int32_t ret = pme->getDefJobStatus(pme->mInitPProcJob);
                         if (ret != NO_ERROR) {
                             job_status = ret;
@@ -9920,6 +10451,11 @@ void *QCamera2HardwareInterface::deferredWorkRoutine(void *obj)
                      break;
                 case CMD_DEF_CREATE_JPEG_SESSION:
                     {
+                        if (nx549jBringupSkipPprocInit()) {
+                            LOGW("NX549J bringup: skip JPEG session create by "
+                                    "persist.camera.force_bringup_skip_pproc_init=1");
+                            break;
+                        }
                         QCameraChannel * pChannel = dw->args.pprocArgs;
                         assert(pChannel);
 
@@ -9942,6 +10478,12 @@ void *QCamera2HardwareInterface::deferredWorkRoutine(void *obj)
                 case CMD_DEF_PPROC_INIT:
                     {
                         int32_t rc = NO_ERROR;
+
+                        if (nx549jBringupSkipPprocInit()) {
+                            LOGW("NX549J bringup: skip deferred pproc init worker by "
+                                    "persist.camera.force_bringup_skip_pproc_init=1");
+                            break;
+                        }
 
                         jpeg_encode_callback_t jpegEvtHandle =
                                 dw->args.pprocInitArgs.jpeg_cb;
@@ -10239,10 +10781,19 @@ int32_t QCamera2HardwareInterface::deinitJpegHandle() {
     LOGH("E");
     // Check if JPEG client handle is present and inited by this camera
     if(mJpegHandleOwner && mJpegClientHandle) {
-        rc = mJpegHandle.close(mJpegClientHandle);
-        if (rc != NO_ERROR) {
-            LOGE("Error!! Closing mJpegClientHandle: %d failed",
-                     mJpegClientHandle);
+        char prop[PROPERTY_VALUE_MAX];
+        property_get("persist.camera.nx549j.skip_jpeg_destroy_on_stop",
+                prop, "1");
+        if (atoi(prop)) {
+            LOGW("NX549J bringup: skip jpeg close client=%d owner=%d to "
+                    "avoid OMX codec cleanup abort",
+                    mJpegClientHandle, mJpegHandleOwner);
+        } else {
+            rc = mJpegHandle.close(mJpegClientHandle);
+            if (rc != NO_ERROR) {
+                LOGE("Error!! Closing mJpegClientHandle: %d failed",
+                         mJpegClientHandle);
+            }
         }
         memset(&mJpegHandle, 0, sizeof(mJpegHandle));
         memset(&mJpegMpoHandle, 0, sizeof(mJpegMpoHandle));
