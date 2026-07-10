@@ -472,6 +472,40 @@ typedef enum {
     CAM_MAPPING_TYPE_MAX
 } cam_mapping_type;
 
+/*
+ * Unix-socket ABI consumed by Nubia's 32-bit proprietary MCT.
+ *
+ * Keep this fixed-width and pointer-free.  The in-process cam_buf_map_type
+ * intentionally remains larger because HAL clients use its trailing buffer
+ * pointer.  Sending that internal layout over the socket shifts every entry
+ * after index 0 and makes the proprietary daemon lose the remaining buffers.
+ */
+typedef struct {
+    uint32_t type;
+    uint32_t stream_id;
+    uint32_t frame_idx;
+    int32_t plane_idx;
+    uint32_t cookie;
+    int32_t fd;
+    uint32_t size;
+} cam_sock_buf_map_type;
+
+typedef struct {
+    uint32_t length;
+    cam_sock_buf_map_type buf_maps[CAM_MAX_NUM_BUFS_PER_STREAM];
+} cam_sock_buf_map_type_list;
+
+typedef struct {
+    uint32_t msg_type;
+    union {
+        cam_sock_buf_map_type buf_map;
+        cam_buf_unmap_type buf_unmap;
+        cam_sock_buf_map_type_list buf_map_list;
+        cam_buf_unmap_type_list buf_unmap_list;
+    } payload;
+} cam_sock_packet_t;
+
+/* The no-daemon shim uses the in-process map representation. */
 typedef struct {
     cam_mapping_type msg_type;
     union {
@@ -480,8 +514,30 @@ typedef struct {
         cam_buf_map_type_list buf_map_list;
         cam_buf_unmap_type_list buf_unmap_list;
     } payload;
-} cam_sock_packet_t;
-typedef cam_sock_packet_t cam_reg_buf_t;
+} cam_reg_buf_t;
+
+typedef char cam_sock_buf_map_type_must_be_28_bytes[
+        sizeof(cam_sock_buf_map_type) == 28 ? 1 : -1];
+typedef char cam_sock_buf_map_list_must_be_1796_bytes[
+        sizeof(cam_sock_buf_map_type_list) == 1796 ? 1 : -1];
+typedef char cam_sock_packet_must_be_1800_bytes[
+        sizeof(cam_sock_packet_t) == 1800 ? 1 : -1];
+
+static inline int32_t cam_sock_pack_buf_map(cam_sock_buf_map_type *dst,
+        const cam_buf_map_type *src)
+{
+    if ((uint64_t)src->size > (uint64_t)0xffffffffU) {
+        return -1;
+    }
+    dst->type = (uint32_t)src->type;
+    dst->stream_id = src->stream_id;
+    dst->frame_idx = src->frame_idx;
+    dst->plane_idx = src->plane_idx;
+    dst->cookie = src->cookie;
+    dst->fd = src->fd;
+    dst->size = (uint32_t)src->size;
+    return 0;
+}
 
 typedef enum {
     CAM_MODE_2D = (1<<0),

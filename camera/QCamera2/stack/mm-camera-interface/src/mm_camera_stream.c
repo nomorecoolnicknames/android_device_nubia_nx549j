@@ -2328,31 +2328,48 @@ int32_t mm_stream_map_buf(mm_stream_t * my_obj,
         size_t size, void *buffer)
 {
     int32_t rc = 0;
+    cam_buf_map_type map;
     if (NULL == my_obj || NULL == my_obj->ch_obj || NULL == my_obj->ch_obj->cam_obj) {
         LOGE("NULL obj of stream/channel/camera");
         return -1;
     }
 
+#ifdef DAEMON_PRESENT
     cam_sock_packet_t packet;
-    memset(&packet, 0, sizeof(cam_sock_packet_t));
+#else
+    cam_reg_buf_t packet;
+#endif
+    memset(&map, 0, sizeof(map));
+    memset(&packet, 0, sizeof(packet));
+    map.type = buf_type;
+    map.fd = fd;
+    map.size = size;
+    map.stream_id = my_obj->server_stream_id;
+    map.frame_idx = frame_idx;
+    map.plane_idx = plane_idx;
+    map.buffer = buffer;
     packet.msg_type = CAM_MAPPING_TYPE_FD_MAPPING;
-    packet.payload.buf_map.type = buf_type;
-    packet.payload.buf_map.fd = fd;
-    packet.payload.buf_map.size = size;
-    packet.payload.buf_map.stream_id = my_obj->server_stream_id;
-    packet.payload.buf_map.frame_idx = frame_idx;
-    packet.payload.buf_map.plane_idx = plane_idx;
-    packet.payload.buf_map.buffer = buffer;
+#ifdef DAEMON_PRESENT
+    rc = cam_sock_pack_buf_map(&packet.payload.buf_map, &map);
+#else
+    packet.payload.buf_map = map;
+#endif
     ALOGE("NX549J camera mapdiag: send stream map session=%u stream_id=%d "
             "type=%u frame=%u plane=%d fd=%d size=%zu buffer=%p "
-            "entry_size=%zu packet_size=%zu",
+            "internal_entry_size=%zu wire_entry_size=%zu packet_size=%zu",
             my_obj->ch_obj->cam_obj->sessionid,
             my_obj->server_stream_id, buf_type, frame_idx, plane_idx, fd,
-            size, buffer, sizeof(cam_buf_map_type), sizeof(cam_sock_packet_t));
+            size, buffer, sizeof(cam_buf_map_type),
+            sizeof(cam_sock_buf_map_type), sizeof(packet));
 
 #ifdef DAEMON_PRESENT
-    rc = mm_camera_util_sendmsg(my_obj->ch_obj->cam_obj,
-                                &packet, sizeof(cam_sock_packet_t), fd);
+    if (rc == 0) {
+        rc = mm_camera_util_sendmsg(my_obj->ch_obj->cam_obj,
+                                    &packet, sizeof(packet), fd);
+    } else {
+        ALOGE("NX549J camera mapdiag: reject oversized stream map size=%zu",
+                size);
+    }
 #else
     cam_shim_packet_t *shim_cmd;
     shim_cmd = mm_camera_create_shim_cmd_packet(CAM_SHIM_REG_BUF,
@@ -2400,59 +2417,84 @@ int32_t mm_stream_map_buf(mm_stream_t * my_obj,
 int32_t mm_stream_map_bufs(mm_stream_t * my_obj,
                            const cam_buf_map_type_list *buf_map_list)
 {
+    int32_t ret = 0;
     if (NULL == my_obj || NULL == my_obj->ch_obj || NULL == my_obj->ch_obj->cam_obj) {
         LOGE("NULL obj of stream/channel/camera");
         return -1;
     }
 
+#ifdef DAEMON_PRESENT
     cam_sock_packet_t packet;
-    memset(&packet, 0, sizeof(cam_sock_packet_t));
+#else
+    cam_reg_buf_t packet;
+#endif
+    memset(&packet, 0, sizeof(packet));
     packet.msg_type = CAM_MAPPING_TYPE_FD_BUNDLED_MAPPING;
 
-    memcpy(&packet.payload.buf_map_list, buf_map_list,
-           sizeof(packet.payload.buf_map_list));
-
     int sendfds[CAM_MAX_NUM_BUFS_PER_STREAM];
-    uint32_t numbufs = packet.payload.buf_map_list.length;
+    uint32_t numbufs;
+    if (buf_map_list == NULL ||
+            buf_map_list->length > CAM_MAX_NUM_BUFS_PER_STREAM) {
+        ALOGE("NX549J camera mapdiag: invalid stream map list=%p length=%u",
+                buf_map_list,
+                buf_map_list != NULL ? buf_map_list->length : 0);
+        return -EINVAL;
+    }
+    numbufs = buf_map_list->length;
     if (numbufs < 1) {
       LOGD("No buffers, suppressing the mapping command");
       return 0;
     }
+    packet.payload.buf_map_list.length = numbufs;
 
     uint32_t i;
     for (i = 0; i < numbufs; i++) {
+        const cam_buf_map_type *src = &buf_map_list->buf_maps[i];
+#ifdef DAEMON_PRESENT
+        ret = cam_sock_pack_buf_map(
+                &packet.payload.buf_map_list.buf_maps[i], src);
+        if (ret < 0) {
+            ALOGE("NX549J camera mapdiag: reject oversized stream map "
+                    "item=%u size=%zu", i, src->size);
+            break;
+        }
+#else
+        packet.payload.buf_map_list.buf_maps[i] = *src;
+#endif
         packet.payload.buf_map_list.buf_maps[i].stream_id = my_obj->server_stream_id;
-        sendfds[i] = packet.payload.buf_map_list.buf_maps[i].fd;
+        sendfds[i] = src->fd;
         ALOGE("NX549J camera mapdiag: send stream map_bufs session=%u "
                 "stream_id=%d item=%u/%u type=%u frame=%u plane=%d "
-                "cookie=%u fd=%d size=%zu buffer=%p entry_size=%zu "
-                "packet_size=%zu",
+                "cookie=%u fd=%d size=%zu buffer=%p "
+                "internal_entry_size=%zu wire_entry_size=%zu packet_size=%zu",
                 my_obj->ch_obj->cam_obj->sessionid,
                 my_obj->server_stream_id, i, numbufs,
-                packet.payload.buf_map_list.buf_maps[i].type,
-                packet.payload.buf_map_list.buf_maps[i].frame_idx,
-                packet.payload.buf_map_list.buf_maps[i].plane_idx,
-                packet.payload.buf_map_list.buf_maps[i].cookie,
-                packet.payload.buf_map_list.buf_maps[i].fd,
-                packet.payload.buf_map_list.buf_maps[i].size,
-                packet.payload.buf_map_list.buf_maps[i].buffer,
-                sizeof(cam_buf_map_type), sizeof(cam_sock_packet_t));
+                src->type, src->frame_idx, src->plane_idx, src->cookie,
+                src->fd, src->size, src->buffer,
+                sizeof(cam_buf_map_type), sizeof(cam_sock_buf_map_type),
+                sizeof(packet));
     }
 
-    for (i = numbufs; i < CAM_MAX_NUM_BUFS_PER_STREAM; i++) {
-        packet.payload.buf_map_list.buf_maps[i].fd = -1;
-        sendfds[i] = -1;
+    if (ret == 0) {
+        for (i = numbufs; i < CAM_MAX_NUM_BUFS_PER_STREAM; i++) {
+            packet.payload.buf_map_list.buf_maps[i].fd = -1;
+            sendfds[i] = -1;
+        }
     }
 
 #ifdef DAEMON_PRESENT
-    int32_t ret = mm_camera_util_bundled_sendmsg(my_obj->ch_obj->cam_obj,
-            &packet, sizeof(cam_sock_packet_t), sendfds, numbufs);
+    if (ret == 0) {
+        ret = mm_camera_util_bundled_sendmsg(my_obj->ch_obj->cam_obj,
+                &packet, sizeof(packet), sendfds, numbufs);
+    }
 #else
-    cam_shim_packet_t *shim_cmd;
-    shim_cmd = mm_camera_create_shim_cmd_packet(CAM_SHIM_REG_BUF,
-            my_obj->ch_obj->cam_obj->sessionid, &packet);
-    int32_t ret = mm_camera_module_send_cmd(shim_cmd);
-    mm_camera_destroy_shim_cmd_packet(shim_cmd);
+    if (ret == 0) {
+        cam_shim_packet_t *shim_cmd;
+        shim_cmd = mm_camera_create_shim_cmd_packet(CAM_SHIM_REG_BUF,
+                my_obj->ch_obj->cam_obj->sessionid, &packet);
+        ret = mm_camera_module_send_cmd(shim_cmd);
+        mm_camera_destroy_shim_cmd_packet(shim_cmd);
+    }
 #endif
     if ((numbufs > 0) && ((buf_map_list->buf_maps[0].type
             == CAM_MAPPING_BUF_TYPE_STREAM_BUF)
@@ -2512,8 +2554,12 @@ int32_t mm_stream_unmap_buf(mm_stream_t * my_obj,
         LOGE("NULL obj of stream/channel/camera");
         return -1;
     }
+#ifdef DAEMON_PRESENT
     cam_sock_packet_t packet;
-    memset(&packet, 0, sizeof(cam_sock_packet_t));
+#else
+    cam_reg_buf_t packet;
+#endif
+    memset(&packet, 0, sizeof(packet));
     packet.msg_type = CAM_MAPPING_TYPE_FD_UNMAPPING;
     packet.payload.buf_unmap.type = buf_type;
     packet.payload.buf_unmap.stream_id = my_obj->server_stream_id;
@@ -2521,7 +2567,7 @@ int32_t mm_stream_unmap_buf(mm_stream_t * my_obj,
     packet.payload.buf_unmap.plane_idx = plane_idx;
 #ifdef DAEMON_PRESENT
     ret = mm_camera_util_sendmsg(my_obj->ch_obj->cam_obj,
-            &packet, sizeof(cam_sock_packet_t), -1);
+            &packet, sizeof(packet), -1);
 #else
     cam_shim_packet_t *shim_cmd;
     shim_cmd = mm_camera_create_shim_cmd_packet(CAM_SHIM_REG_BUF,
