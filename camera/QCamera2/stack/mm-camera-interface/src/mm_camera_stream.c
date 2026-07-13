@@ -1297,25 +1297,49 @@ int32_t mm_stream_streamon(mm_stream_t *my_obj)
           my_obj->my_hdl, my_obj->fd, my_obj->state);
 
     pthread_mutex_lock(&my_obj->buf_lock);
-    for (i = 0; i < my_obj->buf_num; i++) {
-        if ((my_obj->buf_status[i].map_status == 0) &&
-                (my_obj->buf_status[i].in_kernel)) {
-            LOGD("waiting for mapping to done: strm fd = %d",
-                     my_obj->fd);
-            struct timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            ts.tv_sec += WAIT_TIMEOUT;
-            rc = pthread_cond_timedwait(&my_obj->buf_cond, &my_obj->buf_lock, &ts);
-            if (rc == ETIMEDOUT) {
-                LOGE("Timed out. Abort stream-on \n");
-                rc = -1;
+    {
+        struct timespec ts;
+        uint32_t pending;
+        uint32_t failed;
+
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        ts.tv_sec += WAIT_TIMEOUT;
+        do {
+            pending = 0;
+            failed = 0;
+            for (i = 0; i < my_obj->buf_num; i++) {
+                if (my_obj->buf_status[i].map_status < 0) {
+                    failed++;
+                } else if (my_obj->buf_status[i].map_status == 0 &&
+                        my_obj->buf_status[i].in_kernel) {
+                    pending++;
+                }
             }
-            break;
-        } else if (my_obj->buf_status[i].map_status < 0) {
-            LOGD("Buffer mapping failed. Abort Stream On");
-            rc = -1;
-            break;
-        }
+
+            if (failed) {
+                LOGE("Buffer mapping failed. Abort Stream On");
+                rc = -1;
+                break;
+            }
+            if (!pending)
+                break;
+
+            LOGD("waiting for %u buffer mappings: strm fd = %d", pending,
+                    my_obj->fd);
+            rc = pthread_cond_timedwait(&my_obj->buf_cond, &my_obj->buf_lock,
+                    &ts);
+            if (rc == ETIMEDOUT) {
+                LOGE("Timed out waiting for %u buffer mappings. Abort stream-on",
+                        pending);
+                rc = -1;
+                break;
+            }
+            if (rc) {
+                LOGE("Buffer mapping wait failed rc=%d. Abort stream-on", rc);
+                rc = -1;
+                break;
+            }
+        } while (pending);
     }
     pthread_mutex_unlock(&my_obj->buf_lock);
 
