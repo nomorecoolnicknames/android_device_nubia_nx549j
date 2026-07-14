@@ -13,6 +13,10 @@ function blob_fixup() {
         vendor/lib64/libvendor.goodix.hardware.fingerprint@1.0-service.so)
             "${PATCHELF_0_8}" --remove-needed "libprotobuf-cpp-lite.so" "${2}"
             ;;
+        vendor/lib64/hw/gxfingerprint.default.so)
+            python3 "$(dirname "${BASH_SOURCE[0]}")/tools/patch_goodix_reset_null_input.py" \
+                "${2}" "${2}"
+            ;;
         vendor/lib/libmmcamera2_sensor_modules.so)
             sed -i 's|/system/etc/camera/|/vendor/etc/camera/|g' "${2}"
             python3 "$(dirname "${BASH_SOURCE[0]}")/tools/patch_sensor_init_config_wait.py" \

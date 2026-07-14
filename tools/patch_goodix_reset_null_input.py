@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Repair the NX549J sensor init-config timed wait in the stock camera blob.
+"""Repair the validated NX549J Goodix reset command input check.
 
-The 32-bit blob adds one billion to ``timespec.tv_nsec`` before calling
-``pthread_cond_timedwait``.  That produces an invalid absolute deadline and
-turns the intended wait for ``init_config_done`` into an immediate EINVAL.
-This patch preserves the original predicate and changes the deadline to
-``tv_sec += 1``.
+The stock 64-bit gxfingerprint HAL rejects a NULL input pointer before sending
+QSEE command 2, even though all reset call sites use the valid zero-length
+form ``inBuf=NULL, inLen=0``. The guarded four-byte patch removes only that
+pointer check; the output-buffer check and command-length validation stay
+intact. Fingerprint remains fail-closed until its teardown race is fixed.
 """
 
 from __future__ import annotations
@@ -18,15 +18,12 @@ import shutil
 import tempfile
 
 
-EXPECTED_SIZE = 1_060_456
-SOURCE_SHA256 = "174c5e1a9aaf7ab22002fd8c1d2e498b494deefa86540e0c6e8e98b80ae52de9"
-PATCHED_SHA256 = "ad29a1ac3f87eebbfba0a5a35b47156d09703a15b4854d95ec70e9416ccfce5e"
-
-PATCHES = (
-    (0x22ECE, bytes.fromhex("db f8 04 20"), bytes.fromhex("db f8 00 20")),
-    (0x22EE4, bytes.fromhex("cb f8 04 30"), bytes.fromhex("cb f8 00 30")),
-    (0x23198, bytes.fromhex("00 ca 9a 3b"), bytes.fromhex("01 00 00 00")),
-)
+EXPECTED_SIZE = 100_192
+SOURCE_SHA256 = "23e95284e986cf5f4d58786e6c4ad3525dcbaa6016440c5fddc15039217a4881"
+PATCHED_SHA256 = "a629b98317e18320ce1700daabb3ae4289f0d41a4538e48a3917add9d23551fc"
+PATCH_OFFSET = 0x9254
+EXPECTED_BYTES = bytes.fromhex("da 0d 00 b4")
+REPLACEMENT_BYTES = bytes.fromhex("1f 20 03 d5")
 
 
 def digest(data: bytes | bytearray) -> str:
@@ -53,14 +50,13 @@ def patch_blob(source: Path, destination: Path) -> None:
         )
 
     patched = bytearray(source_data)
-    for offset, expected, replacement in PATCHES:
-        actual = bytes(patched[offset : offset + len(expected)])
-        if actual != expected:
-            raise SystemExit(
-                f"refusing {source}: bytes at 0x{offset:x} are "
-                f"{actual.hex()}, expected {expected.hex()}"
-            )
-        patched[offset : offset + len(expected)] = replacement
+    actual = bytes(patched[PATCH_OFFSET : PATCH_OFFSET + len(EXPECTED_BYTES)])
+    if actual != EXPECTED_BYTES:
+        raise SystemExit(
+            f"refusing {source}: bytes at 0x{PATCH_OFFSET:x} are "
+            f"{actual.hex()}, expected {EXPECTED_BYTES.hex()}"
+        )
+    patched[PATCH_OFFSET : PATCH_OFFSET + len(EXPECTED_BYTES)] = REPLACEMENT_BYTES
 
     patched_digest = digest(patched)
     if patched_digest != PATCHED_SHA256:

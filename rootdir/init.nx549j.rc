@@ -56,20 +56,16 @@ service gx_fpd /vendor/bin/gx_fpd
     class core
     user system
     group system
-    # NX549J Fix C4: gx_fpd DT_NEEDs libbinder/libcutils/libutils/libc++ (A6/A9 ABI).
-    # Resolve them from the VNDK-v28 compat dir, matching the fps_hal service scoping.
-    setenv LD_LIBRARY_PATH /vendor/lib64/fp_compat
+    disabled
     writepid /dev/cpuset/system-background/tasks
 
-# NX549J Fix C4: re-enable fps_hal auto-start. The prior attempt516 ISOLATION
-# disabled these triggers because the blob crash-looped in goodix_sensor_init
-# against A11's libbinder ABI; Fix C4 supplies the A9/VNDK-v28 ABI-compat libs
-# via /vendor/lib64/fp_compat (see device.mk + the fps_hal/gx_fpd setenv above).
-on property:goodix.fp.service.ready=1
-   start fps_hal
-
-on property:persist.sys.fp.onstart=1
-   start fps_hal
+# NX549J ISOLATION: do not auto-start fps_hal until the full-A9 closure's
+# teardown race is fixed. C4 cannot link both the blob and A11 wrapper.
+# on property:goodix.fp.service.ready=1
+#    start fps_hal
+#
+# on property:persist.sys.fp.onstart=1
+#    start fps_hal
 
 service goodix_script /vendor/bin/init.goodix.sh
     class late_start
