@@ -35,6 +35,7 @@
 
 // System dependencies
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "hardware/gralloc.h"
@@ -54,6 +55,18 @@ using namespace android;
 
 namespace qcamera {
 #define IS_BUFFER_ERROR(x) (((x) & V4L2_BUF_FLAG_ERROR) == V4L2_BUF_FLAG_ERROR)
+
+static const uint32_t kNx549jPreviewFrameworkBufferCount = 1;
+static const uint32_t kNx549jPreviewPrivateBufferCount = 2;
+static const uint32_t kNx549jPreviewBackendBufferCount = 3;
+
+static bool isNx549jDensePreviewPool(camera3_stream_t *stream,
+        cam_stream_type_t streamType)
+{
+    return stream != NULL &&
+            streamType == CAM_STREAM_TYPE_PREVIEW &&
+            stream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
+}
 
 /*===========================================================================
  * FUNCTION   : QCamera3Channel
@@ -236,6 +249,23 @@ int32_t QCamera3Channel::start()
     m_bIsActive = true;
 
     return rc;
+}
+
+/*===========================================================================
+ * FUNCTION   : preRegisterBuffer
+ *
+ * DESCRIPTION: register a framework buffer before the backend initializes
+ *              and maps stream buffers for STREAM_ON
+ *==========================================================================*/
+int32_t QCamera3Channel::preRegisterBuffer(buffer_handle_t *buffer,
+        __unused uint32_t frameNumber)
+{
+    if (buffer == NULL) {
+        LOGE("Cannot pre-register a NULL framework buffer");
+        return BAD_VALUE;
+    }
+
+    return registerBuffer(buffer, mIsType);
 }
 
 /*===========================================================================
@@ -724,23 +754,39 @@ QCamera3ProcessingChannel::QCamera3ProcessingChannel(uint32_t cam_handle,
         QCamera3Channel *metadataChannel,
         uint32_t numBuffers) :
             QCamera3Channel(cam_handle, channel_handle, cam_ops, cb_routine,
-                    cb_buffer_err, paddingInfo, postprocess_mask, userData, numBuffers),
+                    cb_buffer_err, paddingInfo, postprocess_mask, userData,
+                    isNx549jDensePreviewPool(stream, stream_type) ?
+                            kNx549jPreviewFrameworkBufferCount : numBuffers),
             m_postprocessor(this),
             mFrameCount(0),
             mLastFrameCount(0),
             mLastFpsTime(0),
-            mMemory(numBuffers),
+            mMemory(isNx549jDensePreviewPool(stream, stream_type) ?
+                    kNx549jPreviewPrivateBufferCount : numBuffers),
             mCamera3Stream(stream),
-            mNumBufs(CAM_MAX_NUM_BUFS_PER_STREAM),
+            mNumBufs(isNx549jDensePreviewPool(stream, stream_type) ?
+                    kNx549jPreviewBackendBufferCount :
+                    CAM_MAX_NUM_BUFS_PER_STREAM),
             mStreamType(stream_type),
             mPostProcStarted(false),
             mInputBufferConfig(false),
             m_pMetaChannel(metadataChannel),
             mMetaFrame(NULL),
             mOfflineMemory(0),
-            mOfflineMetaMemory(numBuffers + (MAX_REPROCESS_PIPELINE_STAGES - 1),
-                    false)
+            mOfflineMetaMemory((isNx549jDensePreviewPool(stream, stream_type) ?
+                    kNx549jPreviewFrameworkBufferCount : numBuffers) +
+                    (MAX_REPROCESS_PIPELINE_STAGES - 1),
+                    false),
+            mPreviewInitBufferCount(0)
 {
+    if (isNx549jDensePreviewPool(stream, stream_type)) {
+        LOGI("NX549J: dense preview pool framework=%u private=%u backend=%u "
+                "(DIAGNOSTIC)",
+                kNx549jPreviewFrameworkBufferCount,
+                kNx549jPreviewPrivateBufferCount,
+                kNx549jPreviewBackendBufferCount);
+    }
+
     char prop[PROPERTY_VALUE_MAX];
     property_get("persist.debug.sf.showfps", prop, "0");
     mDebugFPS = (uint8_t) atoi(prop);
@@ -813,6 +859,22 @@ void QCamera3ProcessingChannel::streamCbRoutine(mm_camera_super_buf_t *super_fra
          LOGE("Error, Invalid index for buffer");
          stream->bufDone(frameIndex);
          return;
+    }
+
+    if (mStreamType == CAM_STREAM_TYPE_PREVIEW &&
+            frameIndex < mPreviewInitBufferCount) {
+        /* These private buffers only satisfy the legacy daemon's minimum
+         * preview pool. They never belong to a framework request. Drop their
+         * contents and release this callback reference so the stack can
+         * recycle them. */
+        int32_t rc = stream->bufDone(frameIndex);
+        if (rc != NO_ERROR) {
+            LOGE("Cannot recycle preview init buffer %u: %d", frameIndex, rc);
+        }
+        LOGI("NX549J: recycled private preview init buffer %u (DIAGNOSTIC)",
+                frameIndex);
+        free(super_frame);
+        return;
     }
 
     if (mDebugFPS) {
@@ -1145,6 +1207,63 @@ int32_t QCamera3ProcessingChannel::registerBuffer(buffer_handle_t *buffer,
 }
 
 /*===========================================================================
+ * FUNCTION   : preRegisterBuffer
+ *
+ * DESCRIPTION: register and bind the first framework buffer before the
+ *              backend queues it for STREAM_ON
+ *==========================================================================*/
+int32_t QCamera3ProcessingChannel::preRegisterBuffer(buffer_handle_t *buffer,
+        uint32_t frameNumber)
+{
+    if (buffer == NULL || *buffer == NULL) {
+        LOGE("Cannot pre-register a NULL preview framework handle");
+        return BAD_VALUE;
+    }
+
+    const private_handle_t *priv =
+            static_cast<const private_handle_t *>(*buffer);
+    LOGI("NX549J: preview framework handle format=%d aligned=%dx%d "
+            "requested=%dx%d size=%u flags=0x%x producer=0x%llx "
+            "consumer=0x%llx (DIAGNOSTIC)",
+            priv->format,
+            priv->width,
+            priv->height,
+            priv->unaligned_width,
+            priv->unaligned_height,
+            priv->size,
+            priv->flags,
+            (unsigned long long)priv->producer_usage,
+            (unsigned long long)priv->consumer_usage);
+
+    int32_t rc = registerBuffer(buffer, mIsType);
+    if (rc != NO_ERROR) {
+        return rc;
+    }
+
+    int32_t index = mMemory.getMatchBufIndex((void *)buffer);
+    if (index < 0) {
+        LOGE("Pre-registered buffer is missing from channel memory");
+        return DEAD_OBJECT;
+    }
+
+    rc = mMemory.markFrameNumber((uint32_t)index, frameNumber);
+    if (rc != NO_ERROR) {
+        LOGE("Cannot bind first request frame %u to buffer %d: %d",
+                frameNumber, index, rc);
+        return rc;
+    }
+
+    LOGI("NX549J: bound first request frame %u to pre-registered buffer %d "
+            "(DIAGNOSTIC)", frameNumber, index);
+    return NO_ERROR;
+}
+
+bool QCamera3ProcessingChannel::useNx549jDensePreviewPool() const
+{
+    return isNx549jDensePreviewPool(mCamera3Stream, mStreamType);
+}
+
+/*===========================================================================
  * FUNCTION   : setFwkInputPPData
  *
  * DESCRIPTION: fill out the framework src frame information for reprocessing
@@ -1301,9 +1420,33 @@ int32_t QCamera3ProcessingChannel::getStreamSize(cam_dimension_t &dim)
  *              NO_ERROR  -- success
  *              none-zero failure code
  *==========================================================================*/
-QCamera3StreamMem* QCamera3ProcessingChannel::getStreamBufs(uint32_t /*len*/)
+QCamera3StreamMem* QCamera3ProcessingChannel::getStreamBufs(uint32_t len)
 {
     KPI_ATRACE_CALL();
+    if (isNx549jDensePreviewPool(mCamera3Stream, mStreamType) &&
+            mPreviewInitBufferCount == 0) {
+        for (uint32_t i = 0;
+                i < kNx549jPreviewPrivateBufferCount; i++) {
+            int32_t rc = mMemory.allocateOne(len);
+            if (rc < 0) {
+                LOGE("Cannot allocate private preview init buffer %u: %d",
+                        i, rc);
+                mMemory.deallocate();
+                mPreviewInitBufferCount = 0;
+                return NULL;
+            }
+            rc = mMemory.markFrameNumber(i, INT_MAX);
+            if (rc != NO_ERROR) {
+                LOGE("Cannot reserve preview init buffer %u: %d", i, rc);
+                mMemory.deallocate();
+                mPreviewInitBufferCount = 0;
+                return NULL;
+            }
+            mPreviewInitBufferCount++;
+        }
+        LOGI("NX549J: allocated %u private preview init buffers "
+                "(DIAGNOSTIC)", mPreviewInitBufferCount);
+    }
     return &mMemory;
 }
 
@@ -1319,6 +1462,10 @@ QCamera3StreamMem* QCamera3ProcessingChannel::getStreamBufs(uint32_t /*len*/)
 void QCamera3ProcessingChannel::putStreamBufs()
 {
     mMemory.unregisterBuffers();
+    if (mPreviewInitBufferCount > 0) {
+        mMemory.deallocate();
+        mPreviewInitBufferCount = 0;
+    }
 
     /* Reclaim all the offline metabuffers and push them to free list */
     {
@@ -1850,7 +1997,6 @@ int32_t QCamera3RegularChannel::initialize(cam_is_type_t isType)
     if (rc != NO_ERROR) {
         return -EINVAL;
     }
-
 
     if ((mStreamType == CAM_STREAM_TYPE_VIDEO) ||
             (mStreamType == CAM_STREAM_TYPE_PREVIEW)) {

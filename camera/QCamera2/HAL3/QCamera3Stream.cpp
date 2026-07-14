@@ -250,6 +250,7 @@ QCamera3Stream::QCamera3Stream(uint32_t camHandle,
         mStreamInfoBuf(NULL),
         mStreamBufs(NULL),
         mBufDefs(NULL),
+        mPrimedBufIndex(-1),
         mChannel(channel),
         mBatchSize(0),
         mNumBatchBufs(0),
@@ -690,6 +691,13 @@ int32_t QCamera3Stream::bufDone(uint32_t index)
         return INVALID_OPERATION;
     }
 
+    if ((int32_t)index == mPrimedBufIndex) {
+        LOGI("NX549J: consume request-side handoff for initially queued "
+                "preview buffer %u (DIAGNOSTIC)", index);
+        mPrimedBufIndex = -1;
+        return NO_ERROR;
+    }
+
     if( NULL == mBufDefs[index].mem_info) {
         if (NULL == mMemOps) {
             LOGE("Camera operations not initialized");
@@ -849,6 +857,7 @@ int32_t QCamera3Stream::getBufs(cam_frame_len_offset_t *offset,
 
     mFrameLenOffset = *offset;
     mMemOps = ops_tbl;
+    mPrimedBufIndex = -1;
 
     if (mStreamBufs != NULL) {
        LOGE("Failed getBufs being called twice in a row without a putBufs call");
@@ -917,6 +926,20 @@ int32_t QCamera3Stream::getBufs(cam_frame_len_offset_t *offset,
     for (uint32_t i = 0; i < mNumBufs; i++) {
         if (mStreamBufs->valid(i)) {
             mStreamBufs->getBufDef(mFrameLenOffset, mBufDefs[i], i);
+            if (mChannel != NULL &&
+                    mChannel->useNx549jDensePreviewPool()) {
+                LOGI("NX549J: dense preview buf=%u fd=%d size=%u "
+                        "planes=%d p0_fd=%lu p0_len=%u p1_fd=%lu "
+                        "p1_len=%u (DIAGNOSTIC)",
+                        i,
+                        mBufDefs[i].fd,
+                        mBufDefs[i].frame_len,
+                        mBufDefs[i].planes_buf.num_planes,
+                        mBufDefs[i].planes_buf.planes[0].m.userptr,
+                        mBufDefs[i].planes_buf.planes[0].length,
+                        mBufDefs[i].planes_buf.planes[1].m.userptr,
+                        mBufDefs[i].planes_buf.planes[1].length);
+            }
         }
     }
 
@@ -934,6 +957,18 @@ int32_t QCamera3Stream::getBufs(cam_frame_len_offset_t *offset,
         free(regFlags);
         regFlags = NULL;
         return INVALID_OPERATION;
+    }
+
+    if (mChannel != NULL && mChannel->useNx549jDensePreviewPool()) {
+        for (uint32_t i = 0; i < mNumBufs; i++) {
+            if (mStreamBufs->valid(i) && regFlags[i] == 0) {
+                regFlags[i] = 1;
+                mPrimedBufIndex = (int32_t)i;
+                LOGI("NX549J: initially queue dense preview framework "
+                        "buffer %u (DIAGNOSTIC)", i);
+                break;
+            }
+        }
     }
 
     *num_bufs = mNumBufs;
@@ -958,6 +993,8 @@ int32_t QCamera3Stream::putBufs(mm_camera_map_unmap_ops_tbl_t *ops_tbl)
 {
     int rc = NO_ERROR;
     Mutex::Autolock lock(mLock);
+
+    mPrimedBufIndex = -1;
 
     for (uint32_t i = 0; i < mNumBufs; i++) {
         if (mStreamBufs->valid(i) && NULL != mBufDefs[i].mem_info) {

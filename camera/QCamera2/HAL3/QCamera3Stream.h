@@ -118,6 +118,7 @@ private:
     QCamera3HeapMemory *mStreamInfoBuf;
     QCamera3StreamMem *mStreamBufs;
     mm_camera_buf_def_t *mBufDefs;
+    int32_t mPrimedBufIndex;
     cam_frame_len_offset_t mFrameLenOffset;
     cam_padding_info_t mPaddingInfo;
     QCamera3Channel *mChannel;

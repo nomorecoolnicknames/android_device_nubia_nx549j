@@ -290,7 +290,9 @@ void QCameraMemory::getBufDef(const cam_frame_len_offset_t &offset,
     bufDef.planes_buf.planes[0].reserved[0] = 0;
     for (int i = 1; i < bufDef.planes_buf.num_planes; i++) {
          bufDef.planes_buf.planes[i].length = offset.mp[i].len;
-         bufDef.planes_buf.planes[i].m.userptr = (long unsigned int)mMemInfo[i].fd;
+         /* All planes are offsets in the current contiguous allocation. */
+         bufDef.planes_buf.planes[i].m.userptr =
+                 (long unsigned int)mMemInfo[index].fd;
          bufDef.planes_buf.planes[i].data_offset = offset.mp[i].offset;
          bufDef.planes_buf.planes[i].reserved[0] =
                  bufDef.planes_buf.planes[i-1].reserved[0] +

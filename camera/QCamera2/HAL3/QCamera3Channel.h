@@ -92,6 +92,7 @@ public:
     virtual int32_t setBatchSize(uint32_t);
     virtual int32_t queueBatchBuf();
     virtual int32_t setPerFrameMapUnmap(bool enable);
+    virtual bool useNx549jDensePreviewPool() const { return false; }
     int32_t bufDone(mm_camera_super_buf_t *recvd_frame);
     int32_t setBundleInfo(const cam_bundle_config_t &bundleInfo);
 
@@ -113,6 +114,8 @@ public:
                             QCamera3Stream *stream) = 0;
 
     virtual int32_t registerBuffer(buffer_handle_t *buffer, cam_is_type_t isType) = 0;
+    virtual int32_t preRegisterBuffer(buffer_handle_t *buffer,
+            uint32_t frameNumber);
     virtual QCamera3StreamMem *getStreamBufs(uint32_t len) = 0;
     virtual void putStreamBufs() = 0;
     virtual int32_t flush();
@@ -209,6 +212,9 @@ public:
     virtual QCamera3StreamMem *getStreamBufs(uint32_t len);
     virtual void putStreamBufs();
     virtual int32_t registerBuffer(buffer_handle_t *buffer, cam_is_type_t isType);
+    virtual int32_t preRegisterBuffer(buffer_handle_t *buffer,
+            uint32_t frameNumber);
+    virtual bool useNx549jDensePreviewPool() const;
 
     virtual int32_t stop();
 
@@ -274,6 +280,7 @@ protected:
     Mutex mDropReprocBuffersLock;
     android::List<mm_camera_super_buf_t *> mOutOfSequenceBuffers;
     android::List<uint32_t> mReprocDropBufferList;
+    uint32_t mPreviewInitBufferCount;
 
 private:
 

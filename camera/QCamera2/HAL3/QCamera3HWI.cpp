@@ -2014,7 +2014,8 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
     }
 
     // Create analysis stream all the time, even when h/w support is not available
-    {
+    if (!isCameraPropEnabled(
+            "persist.camera.disable_analysis_stream", "0")) {
         cam_feature_mask_t analysisFeatureMask = hal3NoPpSafeMask;
         setPAAFSupport(analysisFeatureMask, CAM_STREAM_TYPE_ANALYSIS,
                 gCamCapability[mCameraId]->color_arrangement);
@@ -2048,6 +2049,8 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
         if (!mAnalysisChannel) {
             LOGW("Analysis channel cannot be created");
         }
+    } else {
+        LOGE("NX549J: skip HAL3 analysis stream by property (DIAGNOSTIC)");
     }
 
     bool isRawStreamRequested = false;
@@ -2458,7 +2461,10 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
         mStreamConfigInfo.num_streams++;
     }
 
-    if (isSupportChannelNeeded(streamList, mStreamConfigInfo)) {
+    bool nx549jDisableCallbackStream = isCameraPropEnabled(
+            "persist.camera.disable_callback_stream", "0");
+    if (!nx549jDisableCallbackStream &&
+            isSupportChannelNeeded(streamList, mStreamConfigInfo)) {
         cam_analysis_info_t supportInfo;
         memset(&supportInfo, 0, sizeof(cam_analysis_info_t));
         cam_feature_mask_t callbackFeatureMask = hal3NoPpSafeMask;
@@ -2494,6 +2500,9 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
             pthread_mutex_unlock(&mMutex);
             return -ENOMEM;
         }
+    } else if (nx549jDisableCallbackStream) {
+        LOGE("NX549J: skip HAL3 support callback stream by property "
+                "(DIAGNOSTIC)");
     }
 
     if (mSupportChannel) {
@@ -4148,6 +4157,7 @@ int QCamera3HardwareInterface::processCaptureRequest(
     CameraMetadata meta;
     bool isVidBufRequested = false;
     camera3_stream_buffer_t *pInputBuffer = NULL;
+    bool firstRequestOutputFencesAcquired = false;
 
     pthread_mutex_lock(&mMutex);
 
@@ -4529,6 +4539,62 @@ int QCamera3HardwareInterface::processCaptureRequest(
             }
         }
 
+        /* The first preview handle is mapped before STREAM_ON and may be queued
+         * immediately after it succeeds. Acquire every first-request output
+         * fence before handing any handle to the camera stack. */
+        for (size_t i = 0; i < request->num_output_buffers; i++) {
+            const camera3_stream_buffer_t &output = request->output_buffers[i];
+            if (output.acquire_fence != -1) {
+                rc = sync_wait(output.acquire_fence, TIMEOUT_NEVER);
+                close(output.acquire_fence);
+                if (rc != OK) {
+                    LOGE("first request sync wait failed %d", rc);
+                    pthread_mutex_unlock(&mMutex);
+                    goto error_exit;
+                }
+            }
+        }
+        firstRequestOutputFencesAcquired = true;
+
+        /* NX549J's camera daemon rejects preview STREAM_ON without its minimum
+         * private pool. Register only the first preview request here so it is
+         * mapped alongside that pool, while its normal request-side QBUF still
+         * happens after STREAM_ON. */
+        for (size_t i = 0; i < request->num_output_buffers; i++) {
+            const camera3_stream_buffer_t &output = request->output_buffers[i];
+            QCamera3Channel *channel =
+                    static_cast<QCamera3Channel *>(output.stream->priv);
+            if (channel == NULL) {
+                LOGE("Cannot pre-register first-request buffer: NULL channel");
+                rc = BAD_VALUE;
+                pthread_mutex_unlock(&mMutex);
+                goto error_exit;
+            }
+
+            if (!channel->useNx549jDensePreviewPool()) {
+                continue;
+            }
+
+            if (output.stream->format !=
+                    HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED ||
+                    (output.stream->usage &
+                    private_handle_t::PRIV_FLAGS_VIDEO_ENCODER)) {
+                continue;
+            }
+
+            rc = channel->preRegisterBuffer(output.buffer,
+                    request->frame_number);
+            if (rc != NO_ERROR) {
+                LOGE("First-request buffer pre-registration failed %d", rc);
+                pthread_mutex_unlock(&mMutex);
+                goto error_exit;
+            }
+
+            LOGI("NX549J: pre-registered HAL3 buffer before STREAM_ON "
+                    "stream_mask=%u format=%d (DIAGNOSTIC)",
+                    channel->getStreamTypeMask(), output.stream->format);
+        }
+
         //Then start them.
         LOGH("Start META Channel");
         rc = mMetadataChannel->start();
@@ -4670,7 +4736,8 @@ no_error:
             snapshotStreamId = channel->getStreamID(channel->getStreamTypeMask());
         }
 
-        if (output.acquire_fence != -1) {
+        if (!firstRequestOutputFencesAcquired &&
+                output.acquire_fence != -1) {
            rc = sync_wait(output.acquire_fence, TIMEOUT_NEVER);
            close(output.acquire_fence);
            if (rc != OK) {
@@ -11694,6 +11761,25 @@ int32_t QCamera3HardwareInterface::setBundleInfo()
         if (rc != NO_ERROR) {
             LOGE("get_bundle_info failed");
             return rc;
+        }
+        LOGE("NX549J: HAL3 bundle ch=0x%x num_streams=%d "
+                "ids=%u,%u,%u,%u (DIAGNOSTIC)",
+                mChannelHandle,
+                bundleInfo.num_of_streams,
+                bundleInfo.stream_ids[0],
+                bundleInfo.stream_ids[1],
+                bundleInfo.stream_ids[2],
+                bundleInfo.stream_ids[3]);
+        if (isCameraPropEnabled(
+                "persist.camera.nx549j.skip_bundle_setparam", "0")) {
+            LOGE("NX549J: skip unsupported HAL3 SET_BUNDLE_INFO "
+                    "num_streams=%d ids=%u,%u,%u,%u (DIAGNOSTIC)",
+                    bundleInfo.num_of_streams,
+                    bundleInfo.stream_ids[0],
+                    bundleInfo.stream_ids[1],
+                    bundleInfo.stream_ids[2],
+                    bundleInfo.stream_ids[3]);
+            return NO_ERROR;
         }
         if (mAnalysisChannel) {
             mAnalysisChannel->setBundleInfo(bundleInfo);
