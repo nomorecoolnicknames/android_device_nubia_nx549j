@@ -30,3 +30,17 @@
 if [ ! -f /data/system/users/0/settings_fingerprint.xml ]; then
     rm -rf /mnt/vendor/persist/data/finger_*
 fi
+
+# NX549J: gate fps_hal until gx_fpd has registered goodix.fp, so the first
+# connect after cold boot is clean (Fp::reconnect recovers without this, but
+# this removes the transient "getService failed"/"Fp::connect failed"). The
+# 10s timeout fallback always sets the prop, so fps_hal starts no matter what.
+i=0
+while [ $i -lt 100 ]; do
+    if /system/bin/service check goodix.fp 2>/dev/null | grep -q ': found'; then
+        break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+done
+setprop goodix.fp.service.ready 1

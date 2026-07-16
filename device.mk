@@ -36,19 +36,23 @@ PRODUCT_PACKAGES += \
     camera.msm8953 \
     libmm-qcamera
 
-# Fingerprint
-# NX549J ISOLATION: keep the wrapper binary available for targeted bring-up,
-# but do not advertise or auto-start Goodix. The C4 VNDK-v28 LD_LIBRARY_PATH
-# experiment is rejected: gx_fpd and the A11-built HIDL wrapper require
-# mutually incompatible libbinder/libutils symbol sets. The later full-A9 C5
-# prototype reaches the TA, but its teardown race is still unresolved.
-# Rollback condition: enable the feature and init triggers only after a
-# hash-identified process-scoped closure survives enroll/auth/restart testing.
-PRODUCT_PACKAGES += \
-    android.hardware.biometrics.fingerprint@2.1-service.nubia
+# Fingerprint — Goodix GF3208, WORKING (enroll + unlock confirmed 2026-07-16).
+# The Goodix stack is Android-9 blobs (gx_fpd daemon + fps_hal wrapper +
+# libfp_client) running on this Android-11 vendor image. It is shipped as
+# prebuilts (fingerprint-a9.mk) rather than built from AOSP source, plus an
+# LD_PRELOAD binder-compat shim (libbindershim.so) that bridges the A9<->A11
+# binder wire-format divergences (interface token, strong-binder stability, and
+# the servicemanager writeNoException reply prefix). Binary patches: BUG A in
+# gxfingerprint.default.so (NULL cmd=2 buffer) and BUG B in gx_fpd (a premature
+# decStrong that tore down FpService). Init wiring (LD_PRELOAD on gx_fpd/fps_hal
+# and the goodix.fp.service.ready cold-boot gate) is in init.nx549j.rc /
+# init.goodix.sh / the fps_hal .rc. Full analysis: BRINGUP_STATE.md 2026-07-16.
+# Do NOT re-add the AOSP-built service module here — it would collide with the
+# prebuilt A9 binary at the same vendor path.
+$(call inherit-product, vendor/nubia/msm8953-common/fingerprint-a9.mk)
 
-# PRODUCT_COPY_FILES += \
-#     frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
+PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
 
 # NFC
 PRODUCT_PACKAGES += \
