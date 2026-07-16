@@ -11,6 +11,18 @@ ro.secure=0 \
 ro.adb.secure=0 \
 persist.sys.usb.config=adb
 
+# Display: rotation black-flicker mitigation (command-mode OTM1906C/S6D1FA4X01 panel).
+# SurfaceFlinger rotation animation exposes its black background on this cmd-mode
+# panel; these two knobs cut the full black flash down to ~0.1 s (user-confirmed
+# on kernel #271, 2026-07-16). NOT a hardware blank (mdss_fb_blank stays 0).
+# TODO(rotation): the residual ~0.1 s is the ROTATE animation's black corners on a
+# non-square 1080x1920 panel; there is NO runtime knob for the animation type.
+# Eliminating it fully needs a framework change (default rotation animation
+# ROTATE -> CROSSFADE, or JUMPCUT) = system-image rebuild. Deferred (cosmetic).
+PRODUCT_PROPERTY_OVERRIDES += \
+debug.sf.disable_backpressure=1 \
+debug.sf.latch_unsignaled=0
+
 NX549J_ENABLE_CAMERA2_FULL ?= false
 NX549J_ENABLE_CAMERA2_RAW ?= false
 NX549J_ENABLE_CAMERA2_HFR ?= false
