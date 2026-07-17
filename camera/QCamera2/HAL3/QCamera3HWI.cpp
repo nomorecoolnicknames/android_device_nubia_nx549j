@@ -279,12 +279,30 @@ const QCamera3HardwareInterface::QCameraMap<
 const QCamera3HardwareInterface::QCameraMap<
         camera_metadata_enum_android_control_af_mode_t,
         cam_focus_mode_type> QCamera3HardwareInterface::FOCUS_MODES_MAP[] = {
-    { ANDROID_CONTROL_AF_MODE_OFF,                CAM_FOCUS_MODE_OFF },
+    /* NX549J: the Nubia prebuilt af_port (libmmcamera2_stats_modules.so, HAL1
+     * heritage) only recognizes CAM_FOCUS_MODE_MANUAL (8) as manual focus and
+     * ignores CAM_FOCUS_MODE_OFF (0): with OFF it logs
+     * "af_port_handle_set_focus_manual_pos_evt: not in CAM_FOCUS_MODE_OFF(Manual)
+     * mode, ignore the settings" and drops every LENS_FOCUS_DISTANCE, hanging
+     * manual-focus apps. HAL1 already maps its manual position mode to
+     * CAM_FOCUS_MODE_MANUAL (QCameraParameters.cpp:967). Map AF_MODE_OFF (which
+     * in Camera2 means app-controlled lens distance = manual) to MANUAL so the
+     * backend accepts the position. lookupFwkName(MANUAL) now round-trips back
+     * to AF_MODE_OFF. */
+    { ANDROID_CONTROL_AF_MODE_OFF,                CAM_FOCUS_MODE_MANUAL },
     { ANDROID_CONTROL_AF_MODE_OFF,                CAM_FOCUS_MODE_FIXED },
     { ANDROID_CONTROL_AF_MODE_AUTO,               CAM_FOCUS_MODE_AUTO },
     { ANDROID_CONTROL_AF_MODE_MACRO,              CAM_FOCUS_MODE_MACRO },
     { ANDROID_CONTROL_AF_MODE_EDOF,               CAM_FOCUS_MODE_EDOF },
-    { ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE, CAM_FOCUS_MODE_CONTINOUS_PICTURE },
+    /* NX549J INTERIM (pending libmmcamera2_stats_modules.so pull): the Nubia
+     * prebuilt af_port keeps af_algorithm->status=0, so HAF/PDAF scene-change
+     * events never reach the AF algorithm and CAM_FOCUS_MODE_CONTINOUS_PICTURE
+     * issues NO lens moves (log: "HAF EVENT BYPASSED"). The single-scan AUTO
+     * engine works (log: af_util_done final lens pos, status=2). Map
+     * CONTINUOUS_PICTURE -> AUTO so tap-to-focus / precapture triggers drive the
+     * working engine. Revert to CONTINOUS_PICTURE once the stats blob is
+     * decompiled and true CAF is enabled. */
+    { ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE, CAM_FOCUS_MODE_AUTO },
     { ANDROID_CONTROL_AF_MODE_CONTINUOUS_VIDEO,   CAM_FOCUS_MODE_CONTINOUS_VIDEO }
 };
 
