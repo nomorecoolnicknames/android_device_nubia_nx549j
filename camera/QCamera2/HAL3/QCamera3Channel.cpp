@@ -63,9 +63,35 @@ static const uint32_t kNx549jPreviewBackendBufferCount = 3;
 static bool isNx549jDensePreviewPool(camera3_stream_t *stream,
         cam_stream_type_t streamType)
 {
-    return stream != NULL &&
-            streamType == CAM_STREAM_TYPE_PREVIEW &&
-            stream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
+    /* The dense preview pool (three-buffer private topology + preRegisterBuffer
+     * priming, commit 4a86e28) was built on 2026-07-14 to work around what was
+     * then read as "the daemon rejects preview STREAM_ON without its minimum
+     * private pool". That STREAM_ON failure is now understood to be the
+     * self-inflicted wait-gate deadlock (41e8cb1, reverted in 07cc7d9) layered
+     * on top of the gralloc1 ALLOCATE_BUFFER op mismatch (fixed at the root in
+     * e6b3da0). With both real causes gone, the live capture
+     * (nx549j_hal3_after_streamon_revert_clean_20260717.log) shows the pool now
+     * hurts preview: idx0/idx1 private frames are recycled/dropped by design,
+     * the single framework buffer idx2 is never primed before STREAM_ON
+     * (none of the preRegisterBuffer LOGI markers fire), so the daemon
+     * dirty-returns it every cycle (frame=0, V4L2_BUF_FLAG_ERROR) and the
+     * screen stays black. By its own commit message the pool must be rolled
+     * back when it fails its markers, which it does (maps 2 of 3 buffers).
+     *
+     * Gate it behind a property defaulting OFF so preview uses the stock
+     * gralloc framework-buffer topology. Set persist.camera.nx549j.dense_pool=1
+     * to restore the old hack for A/B comparison. Only the HAL3 preview
+     * topology is affected; the HAL1 fd correction from 4a86e28 is untouched. */
+    if (stream == NULL ||
+            streamType != CAM_STREAM_TYPE_PREVIEW ||
+            stream->format != HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
+        return false;
+    }
+
+    char prop[PROPERTY_VALUE_MAX];
+    memset(prop, 0, sizeof(prop));
+    property_get("persist.camera.nx549j.dense_pool", prop, "0");
+    return atoi(prop) != 0;
 }
 
 /*===========================================================================
