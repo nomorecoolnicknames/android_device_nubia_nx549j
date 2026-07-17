@@ -3408,37 +3408,17 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
     }
 
     /*
-     * NX549J PROPER-FIX (black preview root, FACT via RE/ispdiag):
-     *
-     * streamInfo->pp_config.feature_mask drives kernel divert=1 for the
-     * preview stream (CFG_STREAM_NX549J_COMPAT). With divert=1, VFE completes
-     * the preview frame in its native buffer but routes the data to CPP;
-     * msm_cpp.c:2585 then fails to resolve the gralloc output buffer's
-     * physical address ("MSM-CPP: error gettting output physical address",
-     * msm_cpp_get_phy_addr=0, native_buff=0) -> frame dropped -> BUF_DONE=0
-     * -> black preview (verified whole session in capture camD, 327k LOC).
-     * The preview is sensor-native 1920x1080, so CPP CROP/SCALE/etc pp
-     * features are superfluous for display. The pixel path until CPP is
-     * verified healthy (reg_update_ack vfe=1, axi_irq comp=0x1, proper
-     * geometry 1920x1080 stride=1920 NV21).
-     *
-     * Originally prop-gated (`force_bringup_no_pp` and
-     * `persist.camera.nx549j.preview_no_crop_scale`). The HAL .so on the
-     * device already carries the gated logic (commit 90d60dd), but on-device
-     * tests showed the LOGE marker was NOT firing — i.e. neither prop was
-     * set during the captures that still produced black preview
-     * (REMEDIATION_PLAN §camD/L660-674). Unconditional zero for the
-     * display-path streams removes the prop-set dependency that has been
-     * the practical blocker. SNAPSHOT/VIDEO/OFFLINE_PROC keep their pp —
-     * zero pp on the snapshot pipeline SIGSEGVs the daemon (7c3e0e6).
-     *
-     * Rollback: if downstream acts up (HAL halts, no preview at all,
-     * capture path SIGSEGVs again), redefine nx549jBringupNoPpStreamType()
-     * to also include the offending stream_type, or re-gate behind
-     * `persist.camera.force_bringup_no_pp` and ship with prop=0.
+     * NX549J: CROP|SCALE on the preview stream is what diverts it through
+     * CPP, where the gralloc output buffer's physical address can't be
+     * resolved -> frame dropped -> black preview. The preview is sensor-native
+     * 1920x1080, so these are superfluous. Skip them for PREVIEW (prop-gated)
+     * so preview stays on the direct VFE->display path. Snapshot/raw keep
+     * their pp. This does NOT touch the crash-prone force_bringup_no_pp path.
      */
     bool nx549j_prev_no_cs =
-            (stream_type == CAM_STREAM_TYPE_PREVIEW);
+            (stream_type == CAM_STREAM_TYPE_PREVIEW) &&
+            nx549jBringupPropEnabled(
+                    "persist.camera.nx549j.preview_no_crop_scale");
     if (!nx549j_prev_no_cs &&
             !((needReprocess()) && (CAM_STREAM_TYPE_SNAPSHOT == stream_type ||
             CAM_STREAM_TYPE_RAW == stream_type))) {
@@ -3457,14 +3437,14 @@ QCameraHeapMemory *QCamera2HardwareInterface::allocateStreamInfoBuf(
          * VFE writes the display buffer directly. LOGE so it survives the
          * WARN-suppressed log level. Snapshot pp untouched.
          */
-        LOGE("NX549J: preview pp zeroed for direct VFE path, type %d 0x%llx -> 0 (PROPER-FIX, unconditional)",
+        LOGE("NX549J bringup: preview pp zeroed for direct VFE path, type %d 0x%llx -> 0",
                 stream_type, streamInfo->pp_config.feature_mask);
         streamInfo->pp_config.feature_mask = CAM_QCOM_FEATURE_NONE;
     }
 
     if (nx549jBringupNoPp() &&
             nx549jBringupNoPpStreamType(stream_type)) {
-        LOGW("NX549J bringup: forcing streamInfo type %d pp_config 0x%llx -> 0 (force_bringup_no_pp still honoured for POSTVIEW/CALLBACK)",
+        LOGW("NX549J bringup: forcing streamInfo type %d pp_config 0x%llx -> 0",
                 stream_type, streamInfo->pp_config.feature_mask);
         streamInfo->pp_config.feature_mask = CAM_QCOM_FEATURE_NONE;
     }
