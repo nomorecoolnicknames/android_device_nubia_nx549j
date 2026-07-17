@@ -398,8 +398,19 @@ int32_t QCamera3PostProcessor::getFWKJpegEncodeConfig(
     encode_parm.dest_buf[0].buf_size = (size_t)bufSize;
     encode_parm.dest_buf[0].buf_vaddr = (uint8_t *)mOutputMem->getPtr(
             jpeg_settings->out_buf_index);
-    encode_parm.dest_buf[0].fd = mOutputMem->getFd(
-            jpeg_settings->out_buf_index);
+    /* NX549J: with a real ION fd the blob OMX encoder (libqomx_jpegenc ->
+     * libmmqjpeg_codec -> libjpegehw) hands the gralloc BLOB straight to the
+     * HW write-engine at base+header_len, but the WE ioctl carries y_off=0 /
+     * offset=0 (the +header byte offset is dropped in
+     * QImageHW10Encoder::ConfigureOutputBuffer -> jpege_lib_output_buf_enq ->
+     * msm_jpeg_sync v2p), so the HW DMAs the entropy scan to byte 0 and
+     * obliterates the CPU-written EXIF/SOI header. Result: a headerless file
+     * (no ff d8) that ends with ff d9 + exactly header_len trailing zeros --
+     * byte-proven on captures/hal3_shot*_23mp.jpg. Passing fd = -1 forces the
+     * blob's staging path: HW writes its page-aligned (offset-0, correct) work
+     * buffer, then the CPU memcpys header+scan into this gralloc buffer via
+     * buf_vaddr. One extra ~2.5MB memcpy per still; buf_vaddr is kept for it. */
+    encode_parm.dest_buf[0].fd = -1;
     encode_parm.dest_buf[0].format = MM_JPEG_FMT_YUV;
     encode_parm.dest_buf[0].offset = main_offset;
 
@@ -532,8 +543,19 @@ int32_t QCamera3PostProcessor::getJpegEncodeConfig(
     encode_parm.dest_buf[0].buf_size = (size_t)bufSize;
     encode_parm.dest_buf[0].buf_vaddr = (uint8_t *)mOutputMem->getPtr(
             jpeg_settings->out_buf_index);
-    encode_parm.dest_buf[0].fd = mOutputMem->getFd(
-            jpeg_settings->out_buf_index);
+    /* NX549J: with a real ION fd the blob OMX encoder (libqomx_jpegenc ->
+     * libmmqjpeg_codec -> libjpegehw) hands the gralloc BLOB straight to the
+     * HW write-engine at base+header_len, but the WE ioctl carries y_off=0 /
+     * offset=0 (the +header byte offset is dropped in
+     * QImageHW10Encoder::ConfigureOutputBuffer -> jpege_lib_output_buf_enq ->
+     * msm_jpeg_sync v2p), so the HW DMAs the entropy scan to byte 0 and
+     * obliterates the CPU-written EXIF/SOI header. Result: a headerless file
+     * (no ff d8) that ends with ff d9 + exactly header_len trailing zeros --
+     * byte-proven on captures/hal3_shot*_23mp.jpg. Passing fd = -1 forces the
+     * blob's staging path: HW writes its page-aligned (offset-0, correct) work
+     * buffer, then the CPU memcpys header+scan into this gralloc buffer via
+     * buf_vaddr. One extra ~2.5MB memcpy per still; buf_vaddr is kept for it. */
+    encode_parm.dest_buf[0].fd = -1;
     encode_parm.dest_buf[0].format = MM_JPEG_FMT_YUV;
     encode_parm.dest_buf[0].offset = main_offset;
 
