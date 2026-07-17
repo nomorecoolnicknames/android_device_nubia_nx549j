@@ -1298,18 +1298,8 @@ int32_t mm_stream_streamon(mm_stream_t *my_obj)
 
     pthread_mutex_lock(&my_obj->buf_lock);
     for (i = 0; i < my_obj->buf_num; i++) {
-        /* NX549J: GUI apps (Snap/OpenCamera) issue STREAM_ON while preview
-         * buffers are pending-map but not yet queued to the kernel
-         * (in_kernel==0). The stock gate only waits for in_kernel buffers, so
-         * the wait is skipped, STREAM_ON races ahead of mapping, the daemon
-         * stores a -1 stream slot and later crashes in
-         * mct_pipeline_send_ctrl_events. Also wait when a PREVIEW buffer is
-         * still unmapped so all buffers are mapped before STREAM_ON. Bounded by
-         * WAIT_TIMEOUT (graceful rc=-1). Snapshot pools are not gated. */
         if ((my_obj->buf_status[i].map_status == 0) &&
-                (my_obj->buf_status[i].in_kernel ||
-                 (my_obj->stream_info != NULL &&
-                  my_obj->stream_info->stream_type == CAM_STREAM_TYPE_PREVIEW))) {
+                (my_obj->buf_status[i].in_kernel)) {
             LOGD("waiting for mapping to done: strm fd = %d",
                      my_obj->fd);
             struct timespec ts;
@@ -2296,13 +2286,9 @@ int8_t mm_stream_need_wait_for_mapping(mm_stream_t * my_obj)
 
     for (i = 0; i < my_obj->buf_num; i++) {
         if ((my_obj->buf_status[i].map_status == 0)
-                && (my_obj->buf_status[i].in_kernel ||
-                    (my_obj->stream_info != NULL &&
-                     my_obj->stream_info->stream_type == CAM_STREAM_TYPE_PREVIEW))) {
+                && (my_obj->buf_status[i].in_kernel)) {
             /*do not signal in case if any buffer is not mapped
-              but queued to kernel (or a preview buffer is still unmapped --
-              NX549J: keep the STREAM_ON waiter parked until preview mapping
-              completes; must match the gate in mm_stream_streamon()).*/
+              but queued to kernel.*/
             ret = 1;
         } else if (my_obj->buf_status[i].map_status < 0) {
             return 0;
