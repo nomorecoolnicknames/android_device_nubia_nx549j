@@ -11,17 +11,18 @@ ro.secure=0 \
 ro.adb.secure=0 \
 persist.sys.usb.config=adb
 
-# Display: rotation black-flicker mitigation (command-mode OTM1906C/S6D1FA4X01 panel).
-# SurfaceFlinger rotation animation exposes its black background on this cmd-mode
-# panel; these two knobs cut the full black flash down to ~0.1 s (user-confirmed
-# on kernel #271, 2026-07-16). NOT a hardware blank (mdss_fb_blank stays 0).
-# TODO(rotation): the residual ~0.1 s is the ROTATE animation's black corners on a
-# non-square 1080x1920 panel; there is NO runtime knob for the animation type.
-# Eliminating it fully needs a framework change (default rotation animation
-# ROTATE -> CROSSFADE, or JUMPCUT) = system-image rebuild. Deferred (cosmetic).
-PRODUCT_PROPERTY_OVERRIDES += \
-debug.sf.disable_backpressure=1 \
-debug.sf.latch_unsignaled=0
+# Display: the rotation black-flicker workaround that used to live here
+# (debug.sf.disable_backpressure=1 / debug.sf.latch_unsignaled=0) is gone, and so
+# is the theory behind it. The flicker was never the ROTATE animation's black
+# corners on a cmd-mode panel: it was the gralloc1 ALLOCATE_BUFFER op mismatch
+# (hwcomposer emitted 17, gralloc only handled 15, so the allocation silently
+# returned null). The rotation animation asks the HWC allocator for its
+# screenshot layer, that allocation failed, and the black frames were the result
+# -- the same bug that greyed out the UI and the camera preview. Fixed at the
+# root in hardware/qcom-caf/msm8953/display commit e6b3da0 (op 17 -> 15); with
+# that in place the stock ROTATE animation is smooth and flicker free
+# (user-confirmed 2026-07-17), so these knobs are unnecessary. See BRINGUP_STATE.md
+# "2026-07-17 - СЕРОЕ РЕШЕНО ОКОНЧАТЕЛЬНО".
 
 NX549J_ENABLE_CAMERA2_FULL ?= false
 NX549J_ENABLE_CAMERA2_RAW ?= false
