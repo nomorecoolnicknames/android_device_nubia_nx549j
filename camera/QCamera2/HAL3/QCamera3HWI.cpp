@@ -2110,26 +2110,6 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
                         mStreamConfigInfo.postprocess_mask[mStreamConfigInfo.num_streams] &=
                                 ~CAM_QCOM_FEATURE_CDS;
                     }
-                    /*
-                     * NX549J PROPER-FIX (HAL3, black preview root):
-                     * Same mechanism as HAL1 fix 28b0742. The preview stream's
-                     * pp_config.feature_mask drives kernel divert=1
-                     * (CFG_STREAM_NX549J_COMPAT). With divert=1, VFE routes to
-                     * CPP; msm_cpp.c:2585 fails to resolve the gralloc output
-                     * buffer physical address -> frame dropped -> black
-                     * preview. Preview is sensor-native 1920x1080, so
-                     * CROP/SCALE/TNR/CAC are superfluous for display. Zeroing
-                     * the mask unconditionally makes VFE write the display
-                     * buffer directly. VIDEO streams keep their pp (TNR etc).
-                     * Rollback: if preview worsens or HAL halts, re-gate behind
-                     * persist.camera.hal3.bringup_no_pp (already =1 on device).
-                     */
-                    LOGE("NX549J: HAL3 preview pp zeroed for direct VFE path, "
-                            "type %d 0x%llx -> 0 (PROPER-FIX, unconditional)",
-                            mStreamConfigInfo.type[mStreamConfigInfo.num_streams],
-                            mStreamConfigInfo.postprocess_mask[mStreamConfigInfo.num_streams]);
-                    mStreamConfigInfo.postprocess_mask[mStreamConfigInfo.num_streams] =
-                            CAM_QCOM_FEATURE_NONE;
                     padding_info.width_padding = mSurfaceStridePadding;
                     padding_info.height_padding = CAM_PAD_TO_2;
                 }

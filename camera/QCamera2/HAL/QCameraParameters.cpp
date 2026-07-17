@@ -14227,8 +14227,6 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
         getStreamDimension(CAM_STREAM_TYPE_PREVIEW,
                 stream_config_info.stream_sizes[stream_config_info.num_streams]);
         updatePpFeatureMask(CAM_STREAM_TYPE_PREVIEW);
-        mStreamPpMask[CAM_STREAM_TYPE_PREVIEW] = CAM_QCOM_FEATURE_NONE;
-        LOGE("NX549J: setStreamConfig preview pp_mask zeroed (ZSL) (PROPER-FIX, unconditional)");
         stream_config_info.postprocess_mask[stream_config_info.num_streams] =
                 mStreamPpMask[CAM_STREAM_TYPE_PREVIEW];
         getStreamFormat(CAM_STREAM_TYPE_PREVIEW,
@@ -14345,9 +14343,6 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
             getStreamDimension(CAM_STREAM_TYPE_PREVIEW,
                     stream_config_info.stream_sizes[stream_config_info.num_streams]);
             updatePpFeatureMask(CAM_STREAM_TYPE_PREVIEW);
-            mStreamPpMask[CAM_STREAM_TYPE_PREVIEW] = CAM_QCOM_FEATURE_NONE;
-            LOGE("NX549J: setStreamConfig preview pp_mask zeroed 0x%llx -> 0 (PROPER-FIX, unconditional)",
-                    (cam_feature_mask_t)mStreamPpMask[CAM_STREAM_TYPE_PREVIEW]);
             stream_config_info.postprocess_mask[stream_config_info.num_streams] =
                     mStreamPpMask[CAM_STREAM_TYPE_PREVIEW];
             getStreamFormat(CAM_STREAM_TYPE_PREVIEW,
@@ -14442,8 +14437,6 @@ bool QCameraParameters::setStreamConfigure(bool isCapture,
                 getStreamDimension(CAM_STREAM_TYPE_PREVIEW,
                         stream_config_info.stream_sizes[stream_config_info.num_streams]);
                 updatePpFeatureMask(CAM_STREAM_TYPE_PREVIEW);
-                mStreamPpMask[CAM_STREAM_TYPE_PREVIEW] = CAM_QCOM_FEATURE_NONE;
-                LOGE("NX549J: setStreamConfig preview pp_mask zeroed (postview) (PROPER-FIX, unconditional)");
                 stream_config_info.postprocess_mask[stream_config_info.num_streams] =
                         mStreamPpMask[CAM_STREAM_TYPE_PREVIEW];
                 getStreamFormat(CAM_STREAM_TYPE_PREVIEW,
