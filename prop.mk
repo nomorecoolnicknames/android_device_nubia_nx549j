@@ -25,7 +25,14 @@ persist.sys.usb.config=adb
 # "2026-07-17 - СЕРОЕ РЕШЕНО ОКОНЧАТЕЛЬНО".
 
 NX549J_ENABLE_CAMERA2_FULL ?= false
-NX549J_ENABLE_CAMERA2_RAW ?= false
+# RAW enabled 2026-07-18: the imx318/imx258 are Bayer sensors (colorFilter=RGGB,
+# full DNG matrices advertised) and the HAL already carries the complete RAW path
+# (RAW cap enum, RAW16/RAW_OPAQUE stream configs, stall durations). GCam's HDR+
+# engine (HdrPlusModule) only enrolls cameras whose REQUEST_AVAILABLE_CAPABILITIES
+# contains RAW(3) -> without it Gcam_Create returns 0 and GCam NPE-crashes at init.
+# Flipping this to true advertises RAW and lets GCam launch. Additive/safe: apps
+# that never request a RAW stream are unaffected. Runtime-killable: persist.camera.hal3.raw 0.
+NX549J_ENABLE_CAMERA2_RAW ?= true
 NX549J_ENABLE_CAMERA2_HFR ?= false
 
 NX549J_CAMERA2_FULL_PROP := 0

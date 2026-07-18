@@ -6116,6 +6116,19 @@ QCamera3HardwareInterface::translateFromHalMetadata(
                 CAM_MAX_SHADING_MAP_HEIGHT);
         size_t map_width = MIN((size_t)gCamCapability[mCameraId]->lens_shading_map_size.width,
                 CAM_MAX_SHADING_MAP_WIDTH);
+        /* NX549J: Camera2 android.hardware.camera2.params.LensShadingMap requires
+         * EVERY gain to be >= 1.0f (they are multiplicative rolloff gains). The
+         * mm-camera daemon here emits some cells < 1.0 (and possibly NaN/zero on
+         * an under-filled grid), which makes the framework throw
+         * IllegalArgumentException("out of range ... too low") when an app reads
+         * STATISTICS_LENS_SHADING_MAP (e.g. GCam). Clamp to >= 1.0 in place; the
+         * !(x >= 1.0f) form also floors NaN. Informational metadata only (the ISP
+         * already applied rolloff to pixels), so no capture regression. */
+        for (size_t i = 0; i < (4U * map_width * map_height); i++) {
+            if (!(lensShadingMap->lens_shading[i] >= 1.0f)) {
+                lensShadingMap->lens_shading[i] = 1.0f;
+            }
+        }
         camMetadata.update(ANDROID_STATISTICS_LENS_SHADING_MAP,
                 lensShadingMap->lens_shading, 4U * map_width * map_height);
     }
@@ -7736,6 +7749,20 @@ int QCamera3HardwareInterface::initStaticMetadata(uint32_t cameraId)
     count = MIN(gCamCapability[cameraId]->fps_ranges_tbl_cnt, MAX_SIZES_CNT);
     makeFPSTable(gCamCapability[cameraId]->fps_ranges_tbl,
             count, MAX_SIZES_CNT, available_fps_ranges);
+    /* NX549J: the rear imx318 has a native 1920x1080 @ 60.05 fps sensor mode
+     * (resolution index 7, imx318_hfr_60 chromatix tuning present on /vendor)
+     * that the backend fps_ranges_tbl never advertises -- it caps at 30, so the
+     * only thing hiding 1080p60 is this AE-fps advertisement. Expose a fixed
+     * [60,60] range (idx7 is fixed 60, min==max, hence no [30,60]) so apps can
+     * request normal-mode 1080p60 video. Rear only; runtime-killable with
+     * `setprop persist.camera.nx549j.fps60 0`. */
+    if ((cameraId == 0) && (count < MAX_SIZES_CNT) &&
+            isCameraPropEnabled("persist.camera.nx549j.fps60", "1")) {
+        available_fps_ranges[count * 2]     = 60;
+        available_fps_ranges[count * 2 + 1] = 60;
+        count++;
+        LOGH("NX549J: advertising rear 1080p60 fps range [60,60]");
+    }
     staticInfo.update(ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
             available_fps_ranges, count * 2);
 
