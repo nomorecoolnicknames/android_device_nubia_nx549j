@@ -5947,9 +5947,22 @@ QCamera3HardwareInterface::translateFromHalMetadata(
         camMetadata.update(ANDROID_SCALER_CROP_REGION, scalerCropRegion, 4);
     }
 
-    IF_META_AVAILABLE(int64_t, sensorExpTime, CAM_INTF_META_SENSOR_EXPOSURE_TIME, metadata) {
-        LOGD("sensorExpTime = %lld", *sensorExpTime);
-        camMetadata.update(ANDROID_SENSOR_EXPOSURE_TIME , sensorExpTime, 1);
+    {
+        /* NX549J: guarantee a valid (>0) exposure time in every CaptureResult.
+         * GCam's HDR+ AE validator (AeMetadata::IsValid) rejects exposure_time<=0
+         * -> "AE produced invalid result: can't run binning" and no shot is taken.
+         * The daemon leaves CAM_INTF_META_SENSOR_EXPOSURE_TIME unfilled/zero on
+         * some ZSL viewfinder frames; fall back to the sensor minimum
+         * (exposure_time_range[0], the same source used for the default at :9248). */
+        int64_t expTime = 0;
+        IF_META_AVAILABLE(int64_t, sensorExpTime, CAM_INTF_META_SENSOR_EXPOSURE_TIME, metadata) {
+            expTime = *sensorExpTime;
+        }
+        if (expTime <= 0) {
+            expTime = gCamCapability[mCameraId]->exposure_time_range[0];
+        }
+        LOGD("sensorExpTime = %lld", expTime);
+        camMetadata.update(ANDROID_SENSOR_EXPOSURE_TIME, &expTime, 1);
     }
 
     IF_META_AVAILABLE(int64_t, sensorFameDuration,
@@ -5965,14 +5978,27 @@ QCamera3HardwareInterface::translateFromHalMetadata(
                 sensorRollingShutterSkew, 1);
     }
 
-    IF_META_AVAILABLE(int32_t, sensorSensitivity, CAM_INTF_META_SENSOR_SENSITIVITY, metadata) {
-        LOGD("sensorSensitivity = %d", *sensorSensitivity);
-        camMetadata.update(ANDROID_SENSOR_SENSITIVITY, sensorSensitivity, 1);
+    {
+        /* NX549J: guarantee ISO >= the sensor minimum so GCam's derived
+         * applied_gain (ISO/base) is >= 1.0 (AeMetadata::IsValid rejects gain<1.0,
+         * the same "AE produced invalid result" failure). Mirrors the request-side
+         * clamp at :10315; the daemon leaves CAM_INTF_META_SENSOR_SENSITIVITY
+         * unfilled/zero on some ZSL frames. The RAW noise profile is computed from
+         * the clamped value. */
+        int32_t iso = 0;
+        IF_META_AVAILABLE(int32_t, sensorSensitivity, CAM_INTF_META_SENSOR_SENSITIVITY, metadata) {
+            iso = *sensorSensitivity;
+        }
+        if (iso < gCamCapability[mCameraId]->sensitivity_range.min_sensitivity) {
+            iso = gCamCapability[mCameraId]->sensitivity_range.min_sensitivity;
+        }
+        LOGD("sensorSensitivity = %d", iso);
+        camMetadata.update(ANDROID_SENSOR_SENSITIVITY, &iso, 1);
 
         if (isHal3RawEnabled(mCameraId)) {
             //calculate the noise profile based on sensitivity
-            double noise_profile_S = computeNoiseModelEntryS(*sensorSensitivity);
-            double noise_profile_O = computeNoiseModelEntryO(*sensorSensitivity);
+            double noise_profile_S = computeNoiseModelEntryS(iso);
+            double noise_profile_O = computeNoiseModelEntryO(iso);
             double noise_profile[2 * gCamCapability[mCameraId]->num_color_channels];
             for (int i = 0; i < 2 * gCamCapability[mCameraId]->num_color_channels; i += 2) {
                 noise_profile[i]   = noise_profile_S;
