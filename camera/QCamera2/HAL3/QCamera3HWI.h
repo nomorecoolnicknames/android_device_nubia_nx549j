@@ -502,6 +502,11 @@ private:
     PendingBuffersMap mPendingBuffersMap;
     pthread_cond_t mRequestCond;
     uint32_t mPendingLiveRequest;
+    // NX549J: cadence counter for the auto-AF-trigger workaround (dead CAF blob).
+    uint32_t mNx549jAutoAfCounter;
+    // NX549J: latched true once the app drives AF itself (real tap: START trigger or
+    // weighted AF region) so the auto-AF injector never fights the user this session.
+    bool mNx549jAppDroveAf;
     bool mWokenUpByDaemon;
     int32_t mCurrentRequestId;
     cam_stream_size_info_t mStreamConfigInfo;
