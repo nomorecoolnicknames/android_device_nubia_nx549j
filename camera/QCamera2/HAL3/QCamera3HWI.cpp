@@ -311,7 +311,13 @@ const QCamera3HardwareInterface::QCameraMap<
      * defocus, so real continuous-picture AF works. Mapped back to CONTINOUS_PICTURE.
      * (CONTINUOUS_VIDEO below stays on AUTO: the video-session daemon wedge of 2abbe9d
      * is a separate mct/SOF issue, revert that one only after a controlled video test.) */
-    { ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE, CAM_FOCUS_MODE_CONTINOUS_PICTURE },
+    /* NX549J: back to AUTO (single-scan) pending PDAF DCC cal. The actuator-name patch
+     * un-bypassed HAF/PDAF (PDAF_Enable 0->1, defocus now computed) but PD defocus does
+     * not drive the lens to a close subject without DCC/defocus->DAC calibration, which
+     * this build lacks. So keep the WORKING single-scan AUTO engine and drive it via the
+     * auto-AF-tap injector (persist.camera.nx549j.autoaf, below) for no-tap convergence.
+     * Restore CONTINOUS_PICTURE once DCC cal lands. */
+    { ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE, CAM_FOCUS_MODE_AUTO },
     /* NX549J: same as CONTINUOUS_PICTURE above - the Nubia prebuilt af_port keeps
      * af_algorithm->status=0 so the continuous AF engine never scans and, worse, a
      * CONTINUOUS_VIDEO AF super-param at video-session start wedges the daemon's
@@ -9531,6 +9537,65 @@ int QCamera3HardwareInterface::setFrameParameters(
             memcpy(mPrevParameters, mParameters, sizeof(metadata_buffer_t));
     }
 
+    /* NX549J: per-frame auto-AF trigger for the dead continuous-AF blob.
+     * translateToHalMetadata() above is settings-gated (only runs when
+     * request->settings != NULL, :9534); GCam sends NULL for steady preview
+     * frames, so an injector living inside it never fires on a static scene
+     * (FACT). setFrameParameters runs for EVERY request (:4847) and mParameters
+     * is pushed to the daemon every frame via set_parms (:5175), so the periodic
+     * tap-to-focus synthesis belongs HERE. Rationale for the synthesis: the
+     * prebuilt A3 CAF/PDAF is dead (af_algorithm status=0, no DCC cal), so a
+     * weighted centre AF ROI + START trigger drives the single-scan
+     * CAM_FOCUS_MODE_AUTO engine to converge sharply -- RE-confirmed that a real
+     * manual tap converges. Fire a short burst on stream open to converge, then a
+     * slow refresh for scene changes. Suppressed once the app drove AF this
+     * session (mNx549jAppDroveAf, latched in translateToHalMetadata).
+     * Runtime-killable: `setprop persist.camera.nx549j.autoaf 0`. */
+    if (mCameraId == 0 && !mNx549jAppDroveAf &&
+            isCameraPropEnabled("persist.camera.nx549j.autoaf", "1")) {
+        uint32_t c = mNx549jAutoAfCounter++;
+        /* Fire from the VERY FIRST frame (c==0): GCam issues only a short burst of
+         * capture requests before its 3A/preview settles, so a late cadence never
+         * lands. Re-fire a few times early to survive request coalescing, then a
+         * slow refresh every 90 frames (~3s) for scene changes. */
+        bool doTrigger = (c == 0) || (c == 2) || (c == 5) || (c == 15) ||
+                ((c % 90) == 30);
+        if (doTrigger) {
+            /* centre AF ROI in ACTIVE-ARRAY coords: central ~1/3, weight 1000 */
+            cam_area_t autoAfRoi;
+            int32_t aaLeft = gCamCapability[mCameraId]->active_array_size.left;
+            int32_t aaTop  = gCamCapability[mCameraId]->active_array_size.top;
+            int32_t aaW    = gCamCapability[mCameraId]->active_array_size.width;
+            int32_t aaH    = gCamCapability[mCameraId]->active_array_size.height;
+            int32_t roiW   = aaW / 3;
+            int32_t roiH   = aaH / 3;
+            autoAfRoi.rect.left   = aaLeft + (aaW - roiW) / 2;
+            autoAfRoi.rect.top    = aaTop  + (aaH - roiH) / 2;
+            autoAfRoi.rect.width  = roiW;
+            autoAfRoi.rect.height = roiH;
+            autoAfRoi.weight      = 1000;
+
+            /* map active-array -> sensor coords, same transform a real tap uses */
+            mCropRegionMapper.toSensor(autoAfRoi.rect.left, autoAfRoi.rect.top,
+                    autoAfRoi.rect.width, autoAfRoi.rect.height);
+            if (ADD_SET_PARAM_ENTRY_TO_BATCH(mParameters,
+                    CAM_INTF_META_AF_ROI, autoAfRoi)) {
+                rc = BAD_VALUE;
+            }
+
+            cam_trigger_t autoAfTrigger;
+            autoAfTrigger.trigger = CAM_AF_TRIGGER_START;
+            autoAfTrigger.trigger_id = (int32_t)(request->frame_number & 0x7FFFFFFF);
+            if (ADD_SET_PARAM_ENTRY_TO_BATCH(mParameters,
+                    CAM_INTF_META_AF_TRIGGER, autoAfTrigger)) {
+                rc = BAD_VALUE;
+            }
+            LOGH("NX549J: auto-AF tap injected (frame %u, counter %u, roi %d,%d %dx%d w%d)",
+                    request->frame_number, c, autoAfRoi.rect.left, autoAfRoi.rect.top,
+                    autoAfRoi.rect.width, autoAfRoi.rect.height, autoAfRoi.weight);
+        }
+    }
+
     return rc;
 }
 
@@ -10531,80 +10596,23 @@ int QCamera3HardwareInterface::translateToHalMetadata
         }
     }
 
-    /* NX549J: "auto-focus like a tap" for the dead continuous-AF blob.
-     * GCam (RE-confirmed) sets AF_MODE=CONTINUOUS_PICTURE, runs no AF of its own, and
-     * sends no AF trigger and no AF region -> it trusts the HAL CAF. But the prebuilt A3
-     * CAF/PDAF is dead (af_algorithm status=0), so FOCUS_MODES_MAP (:294-313) remaps to
-     * the single-scan CAM_FOCUS_MODE_AUTO engine, which -- metering full-frame with no ROI
-     * -- locks at power-on infinity (af_util_done final lens pos ~324; infinity=342,
-     * macro=724), so close/static scenes are soft. Tap-to-focus WORKS: a weighted AF ROI +
-     * START trigger makes the AUTO engine converge sharply. So synthesize exactly that -- a
-     * centre-weighted AF ROI + START -- for the REAR camera on a cadence (burst on stream
-     * open, then a slow refresh), regardless of AF_MODE, but never once the user drove AF
-     * this session. The ROI runs through the IDENTICAL pipeline as the tap block above
-     * (mCropRegionMapper.toSensor + resetIfNeededROI) so units/zoom-crop match a real tap.
-     * Stays in CAM_FOCUS_MODE_AUTO (never CONTINUOUS, which wedges the daemon per 2abbe9d).
-     * Runtime-killable: `setprop persist.camera.nx549j.autoaf 0`. */
-    {
-        if (frame_settings.exists(ANDROID_CONTROL_AF_TRIGGER) &&
-                frame_settings.find(ANDROID_CONTROL_AF_TRIGGER).data.u8[0] ==
-                        ANDROID_CONTROL_AF_TRIGGER_START) {
-            mNx549jAppDroveAf = true;
-        }
-        if (frame_settings.exists(ANDROID_CONTROL_AF_REGIONS) &&
-                frame_settings.find(ANDROID_CONTROL_AF_REGIONS).count >= 5 &&
-                frame_settings.find(ANDROID_CONTROL_AF_REGIONS).data.i32[4] > 0) {
-            mNx549jAppDroveAf = true;
-        }
-
-        /* Default OFF now that real continuous-picture CAF is restored (actuator-name
-         * PDAF fix). This single-scan tap-injector was a workaround for the dead CAF and
-         * would fight the continuous engine; kept prop-gated as a fallback only:
-         * `setprop persist.camera.nx549j.autoaf 1` re-enables it if CAF regresses. */
-        if (mCameraId == 0 && !mNx549jAppDroveAf &&
-                isCameraPropEnabled("persist.camera.nx549j.autoaf", "0")) {
-            uint32_t c = mNx549jAutoAfCounter++;
-            /* fire at counter 20/50/80 (~first 3s @30fps) to converge on open, then a
-             * slow refresh at offset 20 every 300 frames (~10s) for scene changes */
-            bool doTrigger = (c <= 90) ? ((c % 30) == 20) : ((c % 300) == 20);
-            if (doTrigger) {
-                /* centre AF ROI in ACTIVE-ARRAY coords: central ~1/3, weight 1000 (max) */
-                cam_area_t autoAfRoi;
-                int32_t aaLeft = gCamCapability[mCameraId]->active_array_size.left;
-                int32_t aaTop  = gCamCapability[mCameraId]->active_array_size.top;
-                int32_t aaW    = gCamCapability[mCameraId]->active_array_size.width;
-                int32_t aaH    = gCamCapability[mCameraId]->active_array_size.height;
-                int32_t roiW   = aaW / 3;
-                int32_t roiH   = aaH / 3;
-                autoAfRoi.rect.left   = aaLeft + (aaW - roiW) / 2;
-                autoAfRoi.rect.top    = aaTop  + (aaH - roiH) / 2;
-                autoAfRoi.rect.width  = roiW;
-                autoAfRoi.rect.height = roiH;
-                autoAfRoi.weight      = 1000;
-
-                mCropRegionMapper.toSensor(autoAfRoi.rect.left, autoAfRoi.rect.top,
-                        autoAfRoi.rect.width, autoAfRoi.rect.height);
-                bool roiOk = true;
-                if (scalerCropSet) {
-                    roiOk = resetIfNeededROI(&autoAfRoi, &scalerCropRegion);
-                }
-                if (roiOk && ADD_SET_PARAM_ENTRY_TO_BATCH(hal_metadata,
-                        CAM_INTF_META_AF_ROI, autoAfRoi)) {
-                    rc = BAD_VALUE;
-                }
-
-                cam_trigger_t autoAfTrigger;
-                autoAfTrigger.trigger = CAM_AF_TRIGGER_START;
-                autoAfTrigger.trigger_id = (int32_t)(request->frame_number & 0x7FFFFFFF);
-                if (ADD_SET_PARAM_ENTRY_TO_BATCH(hal_metadata,
-                        CAM_INTF_META_AF_TRIGGER, autoAfTrigger)) {
-                    rc = BAD_VALUE;
-                }
-                LOGH("NX549J: auto-AF tap injected (frame %u, counter %u, roi %d,%d %dx%d w%d)",
-                        request->frame_number, c, autoAfRoi.rect.left, autoAfRoi.rect.top,
-                        autoAfRoi.rect.width, autoAfRoi.rect.height, autoAfRoi.weight);
-            }
-        }
+    /* NX549J: latch whether the app itself drove AF this session -- an explicit
+     * AF START trigger or a weighted (>0) AF ROI. Once latched, the per-frame
+     * auto-AF tap synthesis in setFrameParameters() stays out of the way so we
+     * never fight a user/app focus. This detection must live here: frame_settings
+     * is only populated on settings-bearing frames, and this is where the app's
+     * intent arrives. The synthesis itself moved to setFrameParameters() because
+     * translateToHalMetadata() is settings-gated (:9534) and would never run on
+     * GCam's steady static-preview frames. */
+    if (frame_settings.exists(ANDROID_CONTROL_AF_TRIGGER) &&
+            frame_settings.find(ANDROID_CONTROL_AF_TRIGGER).data.u8[0] ==
+                    ANDROID_CONTROL_AF_TRIGGER_START) {
+        mNx549jAppDroveAf = true;
+    }
+    if (frame_settings.exists(ANDROID_CONTROL_AF_REGIONS) &&
+            frame_settings.find(ANDROID_CONTROL_AF_REGIONS).count >= 5 &&
+            frame_settings.find(ANDROID_CONTROL_AF_REGIONS).data.i32[4] > 0) {
+        mNx549jAppDroveAf = true;
     }
 
     // CDS for non-HFR non-video mode
