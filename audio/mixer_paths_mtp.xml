@@ -1435,9 +1435,14 @@
 
     <!-- These are actual sound device specific mixer settings -->
     <path name="adc1">
-        <ctl name="ADC1 Volume" value="6" />
-        <ctl name="DEC1 MUX" value="ADC1" />
-        <ctl name="ADC1_INP1 Switch" value="1" />
+        <!-- NX549J: the built-in mics are DIGITAL (DMIC1/DMIC2 on gpio89/90), NOT
+             analog. This path was inherited from the tissot donor and captured
+             from ADC1/AMIC1 - an unconnected pad - so recordings were pure noise
+             (spectrogram: no speech formants). Stock NX549J captures DEC1 from
+             DMIC1. Switch the mux to DMIC1. NB: also needs the DMIC pinmux enabled
+             in the kernel DTB (&int_codec pinctrl-0 = cdc_dmic0_clk/data_act) or
+             the DMIC clock never leaves the codec. -->
+        <ctl name="DEC1 MUX" value="DMIC1" />
     </path>
 
     <path name="adc2">

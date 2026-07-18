@@ -68,18 +68,15 @@
         <device name="SND_DEVICE_OUT_SPEAKER_PROTECTED_VBAT" acdb_id="136"/>
         <device name="SND_DEVICE_OUT_VOICE_SPEAKER_PROTECTED_VBAT" acdb_id="136"/>
         <device name="SND_DEVICE_IN_CAPTURE_VI_FEEDBACK" acdb_id="137"/>
-        <!-- NX549J mic bring-up: the stock Nubia ACDB blobs (MTP_*_cal.acdb) carry
-             NO AFE/AudProc calibration for acdb_id 34 (SND_DEVICE_IN_HANDSET_STEREO_DMIC,
-             selected for CAMCORDER records because fluencetype=fluence forces dual-mic).
-             Live capture (captures/audio_mic_20260717/mic_logcat.txt): parser prints
-             "Failed to fetch the lookup information of the device 0x22", kernel
-             "afe_find_cal: no matching cal_block found" -> ACDB AFE/vol return -19 ->
-             uncalibrated mic front-end -> silent recording. Re-map these record-side
-             stereo-dmic devices to acdb_id 4 (handset-mic, which IS calibrated in the
-             stock blobs). These are NOT part of a voice rx/tx pair, so the working
-             in-call voice mic (tx=41, verified) is untouched. Config-only, reversible. -->
-        <device name="SND_DEVICE_IN_HANDSET_STEREO_DMIC" acdb_id="4"/>
-        <device name="SND_DEVICE_IN_VOICE_REC_DMIC_STEREO" acdb_id="4"/>
+        <!-- NX549J mic: NO capture-device acdb override. An earlier remap of the
+             stereo-dmic devices 34->4 (commit 448236e) was WRONG and is reverted
+             here. A parse of the stock ACDB blobs (MTP_*_cal.acdb) showed the
+             AudProc-common record calibration EXISTS for both acdb 4 and 34, keyed
+             only at 48000 Hz; device 34 carries +12.0 dB mic gain, device 4 only
+             +2.0 dB. So the built-in mapping (HANDSET_STEREO_DMIC=34) is the hotter,
+             correct one. The -19 seen at 8 kHz was a sample-rate key miss (fixed by
+             forcing 48000 in audio_io_policy.conf), and the "AudProc vol"/"AFE"
+             -19s are cosmetic (absent for all TX devices in these blobs). -->
     </acdb_ids>
 
     <backend_names>
