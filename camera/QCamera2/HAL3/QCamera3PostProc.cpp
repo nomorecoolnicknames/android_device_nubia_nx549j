@@ -1861,6 +1861,34 @@ int32_t QCamera3PostProcessor::encodeData(qcamera_hal3_jpeg_data_t *jpeg_job_dat
     //TBD_later - Zoom event removed in stream
     //main_stream->getCropInfo(crop);
 
+    /* NX549J: when the snapshot stream runs at a different aspect than the
+     * requested JPEG (front sensor-native-size override in
+     * configureStreamsPerfLocked), a zero crop makes mm-jpeg scale the full
+     * frame anamorphically. Center-crop to the destination aspect first.
+     * No-op (crop stays zero) whenever the aspects already match -- i.e. every
+     * currently-working path (rear direct encodes, matched front stills). */
+    if (src_dim.width && src_dim.height && dst_dim.width && dst_dim.height &&
+            ((int32_t)src_dim.width * dst_dim.height !=
+                    (int32_t)src_dim.height * dst_dim.width)) {
+        if ((int32_t)src_dim.width * dst_dim.height >
+                (int32_t)src_dim.height * dst_dim.width) {
+            /* source wider than destination aspect: crop width */
+            crop.height = src_dim.height;
+            crop.width = (int32_t)((int64_t)src_dim.height * dst_dim.width / dst_dim.height);
+        } else {
+            /* source taller/narrower than destination aspect: crop height */
+            crop.width = src_dim.width;
+            crop.height = (int32_t)((int64_t)src_dim.width * dst_dim.height / dst_dim.width);
+        }
+        crop.width  &= ~1;
+        crop.height &= ~1;
+        crop.left = ((src_dim.width  - crop.width)  / 2) & ~1;
+        crop.top  = ((src_dim.height - crop.height) / 2) & ~1;
+        LOGH("NX549J: aspect-fit crop %dx%d@(%d,%d) src %dx%d dst %dx%d",
+                crop.width, crop.height, crop.left, crop.top,
+                src_dim.width, src_dim.height, dst_dim.width, dst_dim.height);
+    }
+
     // Set main dim job parameters and handle rotation
     if (!needJpegExifRotation && (jpeg_settings->jpeg_orientation == 90 ||
             jpeg_settings->jpeg_orientation == 270)) {

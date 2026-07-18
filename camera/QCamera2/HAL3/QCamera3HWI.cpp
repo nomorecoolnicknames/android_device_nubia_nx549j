@@ -1668,6 +1668,15 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
     camera3_stream_t *inputStream = NULL;
     bool isJpeg = false;
     cam_dimension_t jpegSize = {0, 0};
+    /* NX549J: largest (area-max, sensor-native 4:3) picture size, used to keep
+     * the FRONT (imx258) daemon snapshot stream on a native dimension. The front
+     * daemon aborts its whole CPP pipeline (CPP_THREAD_MSG_ABORT loop -> provider
+     * respawn -> waitUntilDrained -110) when the front snapshot stream is a
+     * non-native aspect, e.g. the 3840x2160 video-snapshot the API1 shim requests
+     * at front video-mode preview start. The same 2-stream config at native
+     * 4160x3120 works (front photo). {0,0} if the table is empty (self-disables
+     * the override). Consumed in the HAL_PIXEL_FORMAT_BLOB case below. */
+    cam_dimension_t maxJpegDim = calcMaxJpegDim();
 
     cam_padding_info_t padding_info = gCamCapability[mCameraId]->padding_info;
 
@@ -2199,6 +2208,26 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
                             (int32_t)largeYuv888Size.width;
                     mStreamConfigInfo.stream_sizes[mStreamConfigInfo.num_streams].height =
                             (int32_t)largeYuv888Size.height;
+                } else if ((gCamCapability[mCameraId]->position == CAM_POSITION_FRONT ||
+                        gCamCapability[mCameraId]->position == CAM_POSITION_FRONT_AUX) &&
+                        maxJpegDim.width && maxJpegDim.height &&
+                        ((int32_t)newStream->width * maxJpegDim.height !=
+                                (int32_t)newStream->height * maxJpegDim.width)) {
+                    /* NX549J: a non-native-aspect front snapshot stream (e.g. the
+                     * 3840x2160 video-snapshot requested in video mode) makes the
+                     * imx258 daemon abort its CPP pipeline and kill the provider.
+                     * Hand the daemon the sensor-native size instead and let
+                     * mm-jpeg center-crop/scale down to the app-requested JPEG
+                     * (aspect crop added in QCamera3PostProc::encodeData). Same
+                     * internal-size override slot the 4K-video case above uses;
+                     * ZSL (handled first) and rear (position gate) are untouched. */
+                    LOGH("NX549J: front snapshot %dx%d -> native %dx%d (aspect fix)",
+                            newStream->width, newStream->height,
+                            maxJpegDim.width, maxJpegDim.height);
+                    mStreamConfigInfo.stream_sizes[mStreamConfigInfo.num_streams].width =
+                            maxJpegDim.width;
+                    mStreamConfigInfo.stream_sizes[mStreamConfigInfo.num_streams].height =
+                            maxJpegDim.height;
                 }
                 break;
             case HAL_PIXEL_FORMAT_RAW_OPAQUE:
