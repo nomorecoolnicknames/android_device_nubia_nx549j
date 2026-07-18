@@ -114,5 +114,20 @@ PRODUCT_PACKAGES_DEBUG += \
 
 # Verity disabled (vendor.img oversize w/ FEC on 256MB oem partition)
 
+# Full-VNDK bring-up shims (2026-07-18). Custom libs (NOT stock-extracted) that
+# let HALs load under the strict isolated vendor linker namespace once
+# ro.vndk.lite was removed. Bytes live in vendor/nubia/nx549j/proprietary; no
+# generated-Android.mk entry, so they must be installed here or a clean
+# vendorimage loses them. arch is fixed by the dest path (device has 32-only /
+# 64-only), so no multilib guard is needed. See VNDK_FULL_MIGRATION_20260717.md.
+#   libgui_shim_cam.so (32): resolves camera HAL libgui.so symbol under strict NS
+#   libsched_shim.so   (64): set_sched_policy shim (GPS/qti_gnss HAL) under strict NS
+# The 3rd VNDK shim (com.qualcomm.qti.wifidisplayhal@1.0.so) is already installed
+# via msm8953-common-vendor.mk; the two patched stock blobs (libgps.utils.so 64,
+# libmmcamera2_stats_modules.so) are patched in-place in the common proprietary tree.
+PRODUCT_COPY_FILES += \
+    vendor/nubia/nx549j/proprietary/vendor/lib/libgui_shim_cam.so:$(TARGET_COPY_OUT_VENDOR)/lib/libgui_shim_cam.so \
+    vendor/nubia/nx549j/proprietary/vendor/lib64/libsched_shim.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libsched_shim.so
+
 # Inherit the proprietary files
 $(call inherit-product, vendor/nubia/nx549j/nx549j-vendor.mk)
