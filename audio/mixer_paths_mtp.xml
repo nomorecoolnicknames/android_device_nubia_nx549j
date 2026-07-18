@@ -1451,10 +1451,10 @@
     </path>
 
     <path name="adc3">
-        <ctl name="ADC3 Volume" value="6" />
-        <ctl name="DEC1 MUX" value="ADC2" />
-	<ctl name="MI2S_TX Channels" value="One" />
-        <ctl name="ADC2 MUX" value="INP3" />
+        <!-- NX549J: secondary/back mic is DMIC2 (stereo-multiplexed with DMIC1 on
+             the same dmic0 clk/data pins gpio89/90). Was DEC1 MUX=ADC2/INP3 (dead
+             analog pad, tissot donor). Route DEC1 from DMIC2 per stock. -->
+        <ctl name="DEC1 MUX" value="DMIC2" />
     </path>
 
     <path name="hdmi">
@@ -1646,11 +1646,12 @@
 
     <!-- Dual MIC devices -->
     <path name="speaker-dmic-endfire">
-        <path name="adc1" />
-        <ctl name="ADC3 Volume" value="6" />
-        <ctl name="DEC2 MUX" value="ADC2" />
+        <!-- NX549J: dual digital mic (endfire) = DMIC1 + DMIC2, both on the dmic0
+             pins. Was DEC1 via adc1 + DEC2=ADC2/INP3 (dead). Stock-parity stereo
+             DMIC for camcorder + in-call fluence. -->
+        <ctl name="DEC1 MUX" value="DMIC1" />
+        <ctl name="DEC2 MUX" value="DMIC2" />
         <ctl name="MI2S_TX Channels" value="Two" />
-        <ctl name="ADC2 MUX" value="INP3" />
     </path>
 
     <path name="dmic-endfire">
@@ -1666,12 +1667,9 @@
     </path>
 
     <path name="voice-speaker-dmic-ef">
-        <ctl name="MI2S_TX Channels" value="Two" />
-	<ctl name="ADC3 Volume" value="6" />
-        <ctl name="DEC1 MUX" value="ADC2" />
-        <ctl name="ADC2 MUX" value="INP3" />
-        <ctl name="ADC1 Volume" value="6" />
-        <ctl name="DEC2 MUX" value="ADC1" />
+        <!-- NX549J: in-call speaker dual-mic -> stereo DMIC endfire (was dead
+             ADC2/INP3 + ADC1). Stock-parity. -->
+        <path name="dmic-endfire" />
     </path>
 
     <path name="voice-rec-dmic-ef">
