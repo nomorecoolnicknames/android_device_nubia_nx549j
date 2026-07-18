@@ -303,7 +303,14 @@ const QCamera3HardwareInterface::QCameraMap<
      * working engine. Revert to CONTINOUS_PICTURE once the stats blob is
      * decompiled and true CAF is enabled. */
     { ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE, CAM_FOCUS_MODE_AUTO },
-    { ANDROID_CONTROL_AF_MODE_CONTINUOUS_VIDEO,   CAM_FOCUS_MODE_CONTINOUS_VIDEO }
+    /* NX549J: same as CONTINUOUS_PICTURE above - the Nubia prebuilt af_port keeps
+     * af_algorithm->status=0 so the continuous AF engine never scans and, worse, a
+     * CONTINUOUS_VIDEO AF super-param at video-session start wedges the daemon's
+     * mct SOF/metadata dispatch -> the 5s processCaptureRequest throttle times out
+     * ("Unblocked on timeout") -> onDeviceError, killing video recording. Map to
+     * the working single-scan AUTO engine (tap/precapture driven). Revert once the
+     * stats blob is decompiled and true CAF is enabled. */
+    { ANDROID_CONTROL_AF_MODE_CONTINUOUS_VIDEO,   CAM_FOCUS_MODE_AUTO }
 };
 
 const QCamera3HardwareInterface::QCameraMap<
@@ -1698,7 +1705,11 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
     /* EIS setprop control */
     char eis_prop[PROPERTY_VALUE_MAX];
     memset(eis_prop, 0, sizeof(eis_prop));
-    property_get("persist.camera.eis.enable", eis_prop, "1");
+    /* NX549J: default EIS off - the daemon gyro/AIS stack is dead on this port
+     * (STATS_AIS "Query request denied" + gyro_port queue overflow), so EIS would
+     * run on a dead gyro and can wedge the video pipeline. persist.camera.eis.enable=1
+     * re-enables it once the gyro works. */
+    property_get("persist.camera.eis.enable", eis_prop, "0");
     eis_prop_set = (uint8_t)atoi(eis_prop);
 
     m_bEisEnable = eis_prop_set && (!oisSupported && m_bEisSupported) &&
@@ -7710,7 +7721,11 @@ int QCamera3HardwareInterface::initStaticMetadata(uint32_t cameraId)
     char eis_prop[PROPERTY_VALUE_MAX];
     bool eisSupported = false;
     memset(eis_prop, 0, sizeof(eis_prop));
-    property_get("persist.camera.eis.enable", eis_prop, "1");
+    /* NX549J: default EIS off - the daemon gyro/AIS stack is dead on this port
+     * (STATS_AIS "Query request denied" + gyro_port queue overflow), so EIS would
+     * run on a dead gyro and can wedge the video pipeline. persist.camera.eis.enable=1
+     * re-enables it once the gyro works. */
+    property_get("persist.camera.eis.enable", eis_prop, "0");
     uint8_t eis_prop_set = (uint8_t)atoi(eis_prop);
     count = IS_TYPE_MAX;
     count = MIN(gCamCapability[cameraId]->supported_is_types_cnt, count);
