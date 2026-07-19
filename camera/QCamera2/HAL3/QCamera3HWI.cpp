@@ -128,10 +128,29 @@ static bool isHal3RawEnabled(uint32_t cameraId)
     memset(prop, 0, sizeof(prop));
     property_get("persist.camera.hal3.raw", prop, "0");
 
-    return atoi(prop) != 0 &&
-            gCamCapability[cameraId] != NULL &&
-            gCamCapability[cameraId]->sensor_type.sens_type == CAM_SENSOR_RAW &&
-            gCamCapability[cameraId]->supported_raw_dim_cnt > 0;
+    if (atoi(prop) == 0 ||
+            gCamCapability[cameraId] == NULL ||
+            gCamCapability[cameraId]->sensor_type.sens_type != CAM_SENSOR_RAW ||
+            gCamCapability[cameraId]->supported_raw_dim_cnt == 0) {
+        return false;
+    }
+
+    /* NX549J: keep RAW REAR-only. The global hal3.raw flip (8b0f38a) also advertised
+     * RAW on the FRONT (IMX258), whose RAW/ZSL pipeline was never validated; NGCam
+     * enrolls HDR+ iff a camera advertises RAW, so it drives a front RAW session, the
+     * front ISP mis-programs (garbage/green tiles) and the stock iface teardown
+     * escalates it to a daemon abort + hard UI hang. Re-enable per-position with
+     * `setprop persist.camera.hal3.raw.front 1` once the front RAW path is validated. */
+    if (gCamCapability[cameraId]->position == CAM_POSITION_FRONT ||
+            gCamCapability[cameraId]->position == CAM_POSITION_FRONT_AUX) {
+        char fprop[PROPERTY_VALUE_MAX];
+        memset(fprop, 0, sizeof(fprop));
+        property_get("persist.camera.hal3.raw.front", fprop, "0");
+        if (atoi(fprop) == 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool isHal3FullLevelEnabled()
@@ -4350,8 +4369,12 @@ int QCamera3HardwareInterface::processCaptureRequest(
         //Disable CDS for HFR mode or if DIS/EIS is on.
         //CDS is a session parameter in the backend/ISP, so need to be set/reset
         //after every configure_stream
-        if ((CAMERA3_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE == mOpMode) ||
-                (m_bIsVideo)) {
+        // NX549J: also gate this CDS-off program behind force_bringup_no_cpp_cds — even
+        // programming CDS_MODE_OFF hands the daemon CAM_INTF_PARM_CDS_MODE and can trip
+        // the cpp_module_set_parm_dsdn crash. Skip it entirely when the guard is on.
+        if (((CAMERA3_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE == mOpMode) ||
+                (m_bIsVideo)) &&
+                !isCameraPropEnabled("persist.camera.force_bringup_no_cpp_cds", "1")) {
             int32_t cds = CAM_CDS_MODE_OFF;
             if (ADD_SET_PARAM_ENTRY_TO_BATCH(mParameters,
                     CAM_INTF_PARM_CDS_MODE, cds))
@@ -6171,9 +6194,31 @@ QCamera3HardwareInterface::translateFromHalMetadata(
          * STATISTICS_LENS_SHADING_MAP (e.g. GCam). Clamp to >= 1.0 in place; the
          * !(x >= 1.0f) form also floors NaN. Informational metadata only (the ISP
          * already applied rolloff to pixels), so no capture regression. */
-        for (size_t i = 0; i < (4U * map_width * map_height); i++) {
-            if (!(lensShadingMap->lens_shading[i] >= 1.0f)) {
-                lensShadingMap->lens_shading[i] = 1.0f;
+        /* NX549J: Camera2 requires every LSC gain >= 1.0. Prefer RATIO-PRESERVING
+         * renormalization (scale so the smallest gain becomes 1.0) over a per-element
+         * floor: flooring only the sub-1.0 cells while others keep their value distorts
+         * the R/Gr/Gb/B balance -> a green colour cast for RAW consumers (GCam) that
+         * re-apply this shading map. Only renormalize when the min is a sane finite gain
+         * (0.1..1.0, i.e. a max-normalized rolloff map); if any cell is NaN/<=0/garbage
+         * (under-filled grid) fall back to the per-element floor. */
+        size_t lscN = 4U * map_width * map_height;
+        float lscMin = 2.0f;
+        bool lscSane = true;
+        for (size_t i = 0; i < lscN; i++) {
+            float v = lensShadingMap->lens_shading[i];
+            if (!(v > 0.0f)) { lscSane = false; break; }   /* catches <= 0 and NaN */
+            if (v < lscMin) lscMin = v;
+        }
+        if (lscSane && lscMin >= 0.1f && lscMin < 1.0f) {
+            float lscScale = 1.0f / lscMin;
+            for (size_t i = 0; i < lscN; i++) {
+                lensShadingMap->lens_shading[i] *= lscScale;
+            }
+        } else {
+            for (size_t i = 0; i < lscN; i++) {
+                if (!(lensShadingMap->lens_shading[i] >= 1.0f)) {
+                    lensShadingMap->lens_shading[i] = 1.0f;
+                }
             }
         }
         camMetadata.update(ANDROID_STATISTICS_LENS_SHADING_MAP,
@@ -10615,9 +10660,16 @@ int QCamera3HardwareInterface::translateToHalMetadata
         mNx549jAppDroveAf = true;
     }
 
-    // CDS for non-HFR non-video mode
+    // CDS for non-HFR non-video mode.
+    // NX549J: skip CDS param programming when persist.camera.force_bringup_no_cpp_cds
+    // is set. The stock CPP blob's cpp_module_set_parm_dsdn crashes the daemon
+    // (SIGSEGV via a fatal %s debug log, fault 0x40030003) whenever CAM_INTF_PARM_CDS_MODE
+    // is applied AND camera debug is raised -> the black-preview / global.debug landmine.
+    // Never handing the daemon the CDS param defuses it permanently (CDS/DSDN chroma PP was
+    // already stripped from the feature mask, so no functional loss).
     if ((mOpMode != CAMERA3_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE) &&
-            !(m_bIsVideo) && frame_settings.exists(QCAMERA3_CDS_MODE)) {
+            !(m_bIsVideo) && frame_settings.exists(QCAMERA3_CDS_MODE) &&
+            !isCameraPropEnabled("persist.camera.force_bringup_no_cpp_cds", "1")) {
         int32_t *fwk_cds = frame_settings.find(QCAMERA3_CDS_MODE).data.i32;
         if ((CAM_CDS_MODE_MAX <= *fwk_cds) || (0 > *fwk_cds)) {
             LOGE("Invalid CDS mode %d!", *fwk_cds);
