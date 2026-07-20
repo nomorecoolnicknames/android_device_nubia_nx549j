@@ -5957,7 +5957,17 @@ QCamera3HardwareInterface::translateFromHalMetadata(
           blackLevelAppliedPattern->cam_black_level[3]);
         camMetadata.update(QCAMERA3_SENSOR_DYNAMIC_BLACK_LEVEL_PATTERN, fwk_blackLevelInd, 4);
 
-#ifndef USE_HAL_3_3
+        /*
+         * NX549J: report dynamic black/white level unconditionally.
+         * Upstream hides these behind USE_HAL_3_3, which this device builds
+         * with - but that macro also selects CAMERA_DEVICE_API_VERSION_3_3
+         * (QCamera3HWI.cpp:557 / :9067), so it cannot simply be dropped.
+         * These two keys are valid from API 24 on and the Android 11 framework
+         * passes them through fine at device version 3.3. Apps that do their
+         * own RAW processing (GCam's HDR+) read them in onCaptureCompleted and
+         * hard-fail on a null value ("nsr: expected a non-null reference"),
+         * because RAW cannot be normalised without the black/white points.
+         */
         // Update the ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL
         // Need convert the internal 16 bit depth to sensor 10 bit sensor raw
         // depth space.
@@ -5966,14 +5976,11 @@ QCamera3HardwareInterface::translateFromHalMetadata(
         fwk_blackLevelInd[2] /= 64.0;
         fwk_blackLevelInd[3] /= 64.0;
         camMetadata.update(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL, fwk_blackLevelInd, 4);
-#endif
     }
 
-#ifndef USE_HAL_3_3
-    // Fixed whitelevel is used by ISP/Sensor
+    // Fixed whitelevel is used by ISP/Sensor (see NX549J note above)
     camMetadata.update(ANDROID_SENSOR_DYNAMIC_WHITE_LEVEL,
             &gCamCapability[mCameraId]->white_level, 1);
-#endif
 
     IF_META_AVAILABLE(cam_crop_region_t, hScalerCropRegion,
             CAM_INTF_META_SCALER_CROP_REGION, metadata) {
@@ -8591,12 +8598,16 @@ int QCamera3HardwareInterface::initStaticMetadata(uint32_t cameraId)
         available_result_keys.add(ANDROID_STATISTICS_FACE_IDS);
         available_result_keys.add(ANDROID_STATISTICS_FACE_LANDMARKS);
     }
-#ifndef USE_HAL_3_3
-    if (hasBlackRegions) {
-        available_result_keys.add(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL);
-        available_result_keys.add(ANDROID_SENSOR_DYNAMIC_WHITE_LEVEL);
-    }
-#endif
+    /*
+     * NX549J: advertise the dynamic black/white level result keys.
+     * translateFromHalMetadata() now fills both on every result (white level
+     * always, black level whenever the ISP reports the applied pattern), so
+     * they are advertised unconditionally rather than gated on hasBlackRegions
+     * - a client that is told the key does not exist will never read it, which
+     * is what left GCam's RAW pipeline without a black point.
+     */
+    available_result_keys.add(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL);
+    available_result_keys.add(ANDROID_SENSOR_DYNAMIC_WHITE_LEVEL);
     staticInfo.update(ANDROID_REQUEST_AVAILABLE_RESULT_KEYS,
             available_result_keys.array(), available_result_keys.size());
 
