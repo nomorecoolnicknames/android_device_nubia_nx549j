@@ -513,6 +513,11 @@ private:
     uint32_t mNx549jAfStuckFrames;
     // NX549J AF-state shim: true between an app AF_TRIGGER_START and its CANCEL.
     bool mNx549jAfTriggerActive;
+    // NX549J 3A-lock state: the AE/AWB lock the app last requested. The backend
+    // keeps reporting CONVERGED while locked, but Camera2 requires the result to
+    // say LOCKED - clients (GCam) block on that. See translateCbUrgent...().
+    bool mNx549jAeLockReq;
+    bool mNx549jAwbLockReq;
     bool mWokenUpByDaemon;
     int32_t mCurrentRequestId;
     cam_stream_size_info_t mStreamConfigInfo;

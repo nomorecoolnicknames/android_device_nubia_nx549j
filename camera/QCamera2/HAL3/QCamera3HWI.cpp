@@ -70,6 +70,10 @@ namespace qcamera {
 
 #define EMPTY_PIPELINE_DELAY 2
 #define PARTIAL_RESULT_COUNT 2
+/* NX549J: 30 fps cadence in ns, used to clamp the advertised RAW min frame
+ * duration so Camera2 clients keep a full-res RAW stream in their 30 fps
+ * repeating request (ZSL ring). See android.scaler.availableMinFrameDurations. */
+#define NSEC_PER_33MS 33333333LL
 #define FRAME_SKIP_DELAY     0
 
 #define MAX_VALUE_8BIT ((1<<8)-1)
@@ -582,6 +586,8 @@ QCamera3HardwareInterface::QCamera3HardwareInterface(uint32_t cameraId,
     mNx549jAppDroveAf = false;
     mNx549jAfStuckFrames = 0;
     mNx549jAfTriggerActive = false;
+    mNx549jAeLockReq = false;
+    mNx549jAwbLockReq = false;
     mCurrentRequestId = -1;
     pthread_mutex_init(&mMutex, NULL);
 
@@ -1604,6 +1610,8 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
     mNx549jAppDroveAf = false;
     mNx549jAfStuckFrames = 0;
     mNx549jAfTriggerActive = false;
+    mNx549jAeLockReq = false;
+    mNx549jAwbLockReq = false;
 
     // Sanity check stream_list
     if (streamList == NULL) {
@@ -2754,6 +2762,16 @@ int QCamera3HardwareInterface::validateCaptureRequest(
 
     // Validate all buffers
     b = request->output_buffers;
+    /* NX549J zsldiag: what the app asks for per request. If GCam's full-res
+     * RAW stream never appears here, its ZSL ring can never fill (the
+     * "Too few 3A-converged images found: 0 / 1" starve). Diagnostic only. */
+    for (uint32_t d = 0; d < request->num_output_buffers; d++) {
+        LOGE("NX549J zsldiag: req frame=%u buf[%u/%u] fmt=0x%x %dx%d",
+                frameNumber, d, request->num_output_buffers,
+                request->output_buffers[d].stream->format,
+                request->output_buffers[d].stream->width,
+                request->output_buffers[d].stream->height);
+    }
     while (idx < (ssize_t)request->num_output_buffers) {
         QCamera3ProcessingChannel *channel =
                 static_cast<QCamera3ProcessingChannel*>(b->stream->priv);
@@ -3745,6 +3763,13 @@ void QCamera3HardwareInterface::handleBufferWithLock(
         }
         buffer->status |= mPendingBuffersMap.getBufErrStatus(buffer->buffer);
         result.output_buffers = buffer;
+        /* NX549J zsldiag: which stream this returned buffer belongs to. GCam's
+         * ZSL ring is fed from the full-res RAW stream; if only the preview
+         * format ever appears here the ring stays empty ("Too few
+         * 3A-converged images found: 0 / 1"). Diagnostic only. */
+        LOGE("NX549J zsldiag: buf_return frame=%u fmt=0x%x %dx%d status=%d",
+                frame_number, buffer->stream->format,
+                buffer->stream->width, buffer->stream->height, buffer->status);
         LOGE("result frame_number = %d, buffer = %p",
                  frame_number, buffer->buffer);
 
@@ -6899,6 +6924,12 @@ QCamera3HardwareInterface::translateCbUrgentMetadataToResultMetadata
     IF_META_AVAILABLE(uint32_t, whiteBalanceState, CAM_INTF_META_AWB_STATE, metadata) {
         uint8_t fwk_whiteBalanceState = (uint8_t) *whiteBalanceState;
         diag_awb_state = (int32_t)*whiteBalanceState;
+        /* NX549J: same lock contract as AE above - report LOCKED while the app
+         * holds the AWB lock, otherwise clients wait forever. */
+        if (mNx549jAwbLockReq &&
+                isCameraPropEnabled("persist.camera.nx549j.locksync", "1")) {
+            fwk_whiteBalanceState = ANDROID_CONTROL_AWB_STATE_LOCKED;
+        }
         camMetadata.update(ANDROID_CONTROL_AWB_STATE, &fwk_whiteBalanceState, 1);
         LOGD("urgent Metadata : ANDROID_CONTROL_AWB_STATE %u", *whiteBalanceState);
     }
@@ -6917,6 +6948,24 @@ QCamera3HardwareInterface::translateCbUrgentMetadataToResultMetadata
     IF_META_AVAILABLE(uint32_t, ae_state, CAM_INTF_META_AEC_STATE, metadata) {
         uint8_t fwk_ae_state = (uint8_t) *ae_state;
         diag_ae_state = (int32_t)*ae_state;
+        /*
+         * NX549J: honour the AE lock in the reported STATE. The backend keeps
+         * reporting CONVERGED while CAM_INTF_PARM_AEC_LOCK is set, but the
+         * Camera2 contract says the result must read
+         * ANDROID_CONTROL_AE_STATE_LOCKED while the lock is held. Clients block
+         * on this: GCam logs "CAM_Simultaneous3A: Acquiring 3A Lock
+         * { exposure=LOCKED, focus=ANY, whiteBalance=LOCKED }" before a still
+         * capture and waits for the locked states to be reported. Measured on
+         * the release (3adiag): ae_state/awb_state stay 2 (CONVERGED) forever,
+         * so the wait never completes, the payload burst is never submitted to
+         * the HAL at all (zsldiag: only 1440x1080 preview requests ever arrive,
+         * never a RAW/BLOB target) and the capture starves.
+         * Runtime-killable: `setprop persist.camera.nx549j.locksync 0`.
+         */
+        if (mNx549jAeLockReq &&
+                isCameraPropEnabled("persist.camera.nx549j.locksync", "1")) {
+            fwk_ae_state = ANDROID_CONTROL_AE_STATE_LOCKED;
+        }
         camMetadata.update(ANDROID_CONTROL_AE_STATE, &fwk_ae_state, 1);
         LOGD("urgent Metadata : ANDROID_CONTROL_AE_STATE %u", *ae_state);
     }
@@ -8086,7 +8135,34 @@ int QCamera3HardwareInterface::initStaticMetadata(uint32_t cameraId)
                 available_min_durations.add(scalar_formats[j]);
                 available_min_durations.add(gCamCapability[cameraId]->raw_dim[i].width);
                 available_min_durations.add(gCamCapability[cameraId]->raw_dim[i].height);
-                available_min_durations.add(gCamCapability[cameraId]->raw_min_duration[i]);
+                /*
+                 * NX549J: the backend reports 41.67 ms (24 fps) as the RAW
+                 * min frame duration at the top sensor mode. A Camera2 client
+                 * that wants a full-res RAW stream inside its 30 fps preview
+                 * repeating request computes from this value that the
+                 * combination cannot keep the viewfinder rate, and silently
+                 * drops RAW from the request. Measured with zsldiag on the
+                 * release: GCam configures a 5488x4112 RAW10 ImageReader with
+                 * a 30-image ZSL ring, then requests ONLY the 1440x1080
+                 * preview buffer on every frame -- so the ring never fills and
+                 * HDR+ capture starves with "Too few 3A-converged images
+                 * found: 0 / 1". Advertise the preview cadence so the client
+                 * keeps RAW in the repeating request; a min duration is a
+                 * lower bound, so the hardware delivering 24 fps is legal and
+                 * the client just gets the slower real rate.
+                 * Runtime-killable: `setprop persist.camera.nx549j.raw30 0`.
+                 */
+                int64_t rawMinDur = gCamCapability[cameraId]->raw_min_duration[i];
+                if (isCameraPropEnabled("persist.camera.nx549j.raw30", "1") &&
+                        (rawMinDur > NSEC_PER_33MS)) {
+                    LOGH("NX549J: clamp RAW min duration %" PRId64 " -> %" PRId64
+                            " for %dx%d fmt 0x%x", rawMinDur, (int64_t)NSEC_PER_33MS,
+                            gCamCapability[cameraId]->raw_dim[i].width,
+                            gCamCapability[cameraId]->raw_dim[i].height,
+                            scalar_formats[j]);
+                    rawMinDur = NSEC_PER_33MS;
+                }
+                available_min_durations.add(rawMinDur);
             }
             break;
         default:
@@ -10240,6 +10316,9 @@ int QCamera3HardwareInterface::translateToHalMetadata
 
     if (frame_settings.exists(ANDROID_CONTROL_AE_LOCK)) {
         uint8_t aeLock = frame_settings.find(ANDROID_CONTROL_AE_LOCK).data.u8[0];
+        /* NX549J: remember what the app asked for; the result must report
+         * LOCKED while the lock is held (see translateCbUrgent...()). */
+        mNx549jAeLockReq = (aeLock != 0);
         if (ADD_SET_PARAM_ENTRY_TO_BATCH(hal_metadata, CAM_INTF_PARM_AEC_LOCK, aeLock)) {
             rc = BAD_VALUE;
         }
@@ -10253,6 +10332,7 @@ int QCamera3HardwareInterface::translateToHalMetadata
 
     if (frame_settings.exists(ANDROID_CONTROL_AWB_LOCK)) {
         uint8_t awbLock = frame_settings.find(ANDROID_CONTROL_AWB_LOCK).data.u8[0];
+        mNx549jAwbLockReq = (awbLock != 0);
         if (ADD_SET_PARAM_ENTRY_TO_BATCH(hal_metadata, CAM_INTF_PARM_AWB_LOCK, awbLock)) {
             rc = BAD_VALUE;
         }

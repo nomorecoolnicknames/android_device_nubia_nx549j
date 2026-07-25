@@ -129,5 +129,15 @@ PRODUCT_COPY_FILES += \
     vendor/nubia/nx549j/proprietary/vendor/lib/libgui_shim_cam.so:$(TARGET_COPY_OUT_VENDOR)/lib/libgui_shim_cam.so \
     vendor/nubia/nx549j/proprietary/vendor/lib64/libsched_shim.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libsched_shim.so
 
+
+# NX549J: expose the Hexagon/ADSP RPC library to apps. libadsprpc.so ships in
+# /vendor/lib*, but without a vendor public.libraries.txt an app cannot dlopen
+# it, so GCam's Halide HDR+ backend fails with
+# "halide: Failed to load libcdsprpc.so or libadsprpc.so" and never brings up
+# its Hexagon environment. (libcdsprpc.so is listed for completeness; MSM8953
+# has no CDSP and the entry is simply unused.)
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/configs/public.libraries.txt:$(TARGET_COPY_OUT_VENDOR)/etc/public.libraries.txt
+
 # Inherit the proprietary files
 $(call inherit-product, vendor/nubia/nx549j/nx549j-vendor.mk)

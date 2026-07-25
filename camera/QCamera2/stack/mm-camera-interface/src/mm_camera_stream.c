@@ -46,6 +46,27 @@
 #include "mm_camera_interface.h"
 #include "mm_camera.h"
 
+/*
+ * NX549J: the per-frame bring-up diagnostics below (superdiag/mapdiag) were
+ * unconditional ALOGE. At 30 fps they flood logcat, cost measurable frame time
+ * (observed FrameJank 175 ms and preview dropping to ~8 fps) and drown the
+ * evidence they exist to provide. Gate them on persist.camera.nx549j.diagspam
+ * (default OFF) so the release is quiet and a measurement run can enable them
+ * deliberately. Prop is read once per process.
+ */
+static int nx549j_diag_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        char prop[PROPERTY_VALUE_MAX];
+        memset(prop, 0, sizeof(prop));
+        property_get("persist.camera.nx549j.diagspam", prop, "0");
+        cached = (atoi(prop) > 0) ? 1 : 0;
+    }
+    return cached;
+}
+#define NX549J_DIAG_ENABLED() nx549j_diag_enabled()
+
 /* internal function decalre */
 int32_t mm_stream_qbuf(mm_stream_t *my_obj,
                        mm_camera_buf_def_t *buf);
@@ -209,25 +230,27 @@ void mm_stream_handle_rcvd_buf(mm_stream_t *my_obj,
             (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
              my_obj->is_bundled || has_cb)) {
         uint32_t idx = buf_info->buf->buf_idx;
-        LOGE("NX549J camera superdiag: handle_rcvd enter hdl=0x%x "
-                "server_id=%d type=%d frame=%u idx=%u bundled=%u "
-                "linked=%u has_cb=%u ch=%p linked_ch=%p cmd_active=%u "
-                "ref=%u in_kernel=%u",
-                my_obj->my_hdl,
-                my_obj->server_stream_id,
-                my_obj->stream_info->stream_type,
-                buf_info->frame_idx,
-                idx,
-                my_obj->is_bundled,
-                my_obj->is_linked,
-                has_cb,
-                my_obj->ch_obj,
-                my_obj->linked_obj,
-                my_obj->cmd_thread.is_active,
-                idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
-                        my_obj->buf_status[idx].buf_refcnt : 0,
-                idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
-                        my_obj->buf_status[idx].in_kernel : 0);
+        if (NX549J_DIAG_ENABLED()) {
+            LOGE("NX549J camera superdiag: handle_rcvd enter hdl=0x%x "
+                    "server_id=%d type=%d frame=%u idx=%u bundled=%u "
+                    "linked=%u has_cb=%u ch=%p linked_ch=%p cmd_active=%u "
+                    "ref=%u in_kernel=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    buf_info->frame_idx,
+                    idx,
+                    my_obj->is_bundled,
+                    my_obj->is_linked,
+                    has_cb,
+                    my_obj->ch_obj,
+                    my_obj->linked_obj,
+                    my_obj->cmd_thread.is_active,
+                    idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                            my_obj->buf_status[idx].buf_refcnt : 0,
+                    idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                            my_obj->buf_status[idx].in_kernel : 0);
+        }
     }
 
     /* enqueue to super buf thread */
@@ -237,14 +260,16 @@ void mm_stream_handle_rcvd_buf(mm_stream_t *my_obj,
                 my_obj->stream_info != NULL &&
                 (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
                  has_cb)) {
-            LOGE("NX549J camera superdiag: handle_rcvd notify_channel "
-                    "hdl=0x%x server_id=%d type=%d frame=%u idx=%u rc=%d",
-                    my_obj->my_hdl,
-                    my_obj->server_stream_id,
-                    my_obj->stream_info->stream_type,
-                    buf_info->frame_idx,
-                    buf_info->buf->buf_idx,
-                    rc);
+            if (NX549J_DIAG_ENABLED()) {
+                LOGE("NX549J camera superdiag: handle_rcvd notify_channel "
+                        "hdl=0x%x server_id=%d type=%d frame=%u idx=%u rc=%d",
+                        my_obj->my_hdl,
+                        my_obj->server_stream_id,
+                        my_obj->stream_info->stream_type,
+                        buf_info->frame_idx,
+                        buf_info->buf->buf_idx,
+                        rc);
+            }
         }
         if (rc < 0) {
             LOGE("Unable to notify channel");
@@ -261,14 +286,16 @@ void mm_stream_handle_rcvd_buf(mm_stream_t *my_obj,
                 my_obj->stream_info != NULL &&
                 (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
                  has_cb)) {
-            LOGE("NX549J camera superdiag: handle_rcvd notify_linked "
-                    "hdl=0x%x server_id=%d type=%d frame=%u idx=%u rc=%d",
-                    my_obj->my_hdl,
-                    my_obj->server_stream_id,
-                    my_obj->stream_info->stream_type,
-                    buf_info->frame_idx,
-                    buf_info->buf->buf_idx,
-                    rc);
+            if (NX549J_DIAG_ENABLED()) {
+                LOGE("NX549J camera superdiag: handle_rcvd notify_linked "
+                        "hdl=0x%x server_id=%d type=%d frame=%u idx=%u rc=%d",
+                        my_obj->my_hdl,
+                        my_obj->server_stream_id,
+                        my_obj->stream_info->stream_type,
+                        buf_info->frame_idx,
+                        buf_info->buf->buf_idx,
+                        rc);
+            }
         }
         if (rc < 0) {
             LOGE("Unable to notify channel");
@@ -376,23 +403,25 @@ static void mm_stream_data_notify(void* user_data)
     if (my_obj->stream_info != NULL &&
             (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
              my_obj->is_bundled)) {
-        LOGE("NX549J camera superdiag: data_notify enter hdl=0x%x "
-                "server_id=%d type=%d fd=%d state=%d queued=%d "
-                "buf_num=%u bundled=%u linked=%u mode=%d planes=%u "
-                "no_frame=%u cb_active=%u",
-                my_obj->my_hdl,
-                my_obj->server_stream_id,
-                my_obj->stream_info->stream_type,
-                my_obj->fd,
-                my_obj->state,
-                my_obj->queued_buffer_count,
-                my_obj->buf_num,
-                my_obj->is_bundled,
-                my_obj->is_linked,
-                my_obj->stream_info->streaming_mode,
-                my_obj->frame_offset.num_planes,
-                my_obj->stream_info->noFrameExpected,
-                my_obj->cmd_thread.is_active);
+        if (NX549J_DIAG_ENABLED()) {
+            LOGE("NX549J camera superdiag: data_notify enter hdl=0x%x "
+                    "server_id=%d type=%d fd=%d state=%d queued=%d "
+                    "buf_num=%u bundled=%u linked=%u mode=%d planes=%u "
+                    "no_frame=%u cb_active=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    my_obj->fd,
+                    my_obj->state,
+                    my_obj->queued_buffer_count,
+                    my_obj->buf_num,
+                    my_obj->is_bundled,
+                    my_obj->is_linked,
+                    my_obj->stream_info->streaming_mode,
+                    my_obj->frame_offset.num_planes,
+                    my_obj->stream_info->noFrameExpected,
+                    my_obj->cmd_thread.is_active);
+        }
     }
 
     if (my_obj->stream_info->streaming_mode == CAM_STREAMING_MODE_BATCH) {
@@ -405,15 +434,17 @@ static void mm_stream_data_notify(void* user_data)
     rc = mm_stream_read_msm_frame(my_obj, &buf_info,
         (uint8_t)length);
     if (rc != 0) {
-        LOGE("NX549J camera superdiag: data_notify read fail "
-                "hdl=0x%x server_id=%d type=%d fd=%d rc=%d len=%u",
-                my_obj->my_hdl,
-                my_obj->server_stream_id,
-                my_obj->stream_info != NULL ?
-                        my_obj->stream_info->stream_type : -1,
-                my_obj->fd,
-                rc,
-                length);
+        if (NX549J_DIAG_ENABLED()) {
+            LOGE("NX549J camera superdiag: data_notify read fail "
+                    "hdl=0x%x server_id=%d type=%d fd=%d rc=%d len=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info != NULL ?
+                            my_obj->stream_info->stream_type : -1,
+                    my_obj->fd,
+                    rc,
+                    length);
+        }
         return;
     }
     uint32_t idx = buf_info.buf->buf_idx;
@@ -436,25 +467,27 @@ static void mm_stream_data_notify(void* user_data)
     if (my_obj->stream_info != NULL &&
             (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
              my_obj->is_bundled || has_cb)) {
-        LOGE("NX549J camera superdiag: data_notify hdl=0x%x server_id=%d "
-                "type=%d frame=%u idx=%u flags=0x%x ts=%lld.%09lld "
-                "has_cb=%u bundled=%d state=%d buf_type=%d ref_before=%u "
-                "in_kernel=%u queued=%d",
-                my_obj->my_hdl,
-                my_obj->server_stream_id,
-                my_obj->stream_info->stream_type,
-                buf_info.frame_idx,
-                idx,
-                buf_info.buf != NULL ? buf_info.buf->flags : 0,
-                buf_info.buf != NULL ? (long long)buf_info.buf->ts.tv_sec : 0,
-                buf_info.buf != NULL ? (long long)buf_info.buf->ts.tv_nsec : 0,
-                has_cb,
-                my_obj->is_bundled,
-                my_obj->state,
-                buf_info.buf != NULL ? buf_info.buf->stream_type : -1,
-                my_obj->buf_status[idx].buf_refcnt,
-                my_obj->buf_status[idx].in_kernel,
-                my_obj->queued_buffer_count);
+        if (NX549J_DIAG_ENABLED()) {
+            LOGE("NX549J camera superdiag: data_notify hdl=0x%x server_id=%d "
+                    "type=%d frame=%u idx=%u flags=0x%x ts=%lld.%09lld "
+                    "has_cb=%u bundled=%d state=%d buf_type=%d ref_before=%u "
+                    "in_kernel=%u queued=%d",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    buf_info.frame_idx,
+                    idx,
+                    buf_info.buf != NULL ? buf_info.buf->flags : 0,
+                    buf_info.buf != NULL ? (long long)buf_info.buf->ts.tv_sec : 0,
+                    buf_info.buf != NULL ? (long long)buf_info.buf->ts.tv_nsec : 0,
+                    has_cb,
+                    my_obj->is_bundled,
+                    my_obj->state,
+                    buf_info.buf != NULL ? buf_info.buf->stream_type : -1,
+                    my_obj->buf_status[idx].buf_refcnt,
+                    my_obj->buf_status[idx].in_kernel,
+                    my_obj->queued_buffer_count);
+        }
     }
 
     pthread_mutex_lock(&my_obj->buf_lock);
@@ -471,18 +504,20 @@ static void mm_stream_data_notify(void* user_data)
     if (my_obj->stream_info != NULL &&
             (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
              my_obj->is_bundled || has_cb)) {
-        LOGE("NX549J camera superdiag: data_notify ref_update hdl=0x%x "
-                "server_id=%d type=%d frame=%u idx=%u ref_after=%u "
-                "in_kernel=%u has_cb=%u bundled=%u",
-                my_obj->my_hdl,
-                my_obj->server_stream_id,
-                my_obj->stream_info->stream_type,
-                buf_info.frame_idx,
-                idx,
-                my_obj->buf_status[idx].buf_refcnt,
-                my_obj->buf_status[idx].in_kernel,
-                has_cb,
-                my_obj->is_bundled);
+        if (NX549J_DIAG_ENABLED()) {
+            LOGE("NX549J camera superdiag: data_notify ref_update hdl=0x%x "
+                    "server_id=%d type=%d frame=%u idx=%u ref_after=%u "
+                    "in_kernel=%u has_cb=%u bundled=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    buf_info.frame_idx,
+                    idx,
+                    my_obj->buf_status[idx].buf_refcnt,
+                    my_obj->buf_status[idx].in_kernel,
+                    has_cb,
+                    my_obj->is_bundled);
+        }
     }
     pthread_mutex_unlock(&my_obj->buf_lock);
 
@@ -1808,18 +1843,20 @@ int32_t mm_stream_read_msm_frame(mm_stream_t * my_obj,
     if (my_obj->stream_info != NULL &&
             (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
              my_obj->is_bundled)) {
-        LOGE("NX549J camera superdiag: dqbuf begin hdl=0x%x server_id=%d "
-                "type=%d fd=%d length=%u queued_before=%d state=%d "
-                "buf_num=%u bundled=%u",
-                my_obj->my_hdl,
-                my_obj->server_stream_id,
-                my_obj->stream_info->stream_type,
-                my_obj->fd,
-                num_planes,
-                my_obj->queued_buffer_count,
-                my_obj->state,
-                my_obj->buf_num,
-                my_obj->is_bundled);
+        if (NX549J_DIAG_ENABLED()) {
+            LOGE("NX549J camera superdiag: dqbuf begin hdl=0x%x server_id=%d "
+                    "type=%d fd=%d length=%u queued_before=%d state=%d "
+                    "buf_num=%u bundled=%u",
+                    my_obj->my_hdl,
+                    my_obj->server_stream_id,
+                    my_obj->stream_info->stream_type,
+                    my_obj->fd,
+                    num_planes,
+                    my_obj->queued_buffer_count,
+                    my_obj->state,
+                    my_obj->buf_num,
+                    my_obj->is_bundled);
+        }
     }
 
     rc = ioctl(my_obj->fd, VIDIOC_DQBUF, &vb);
@@ -1829,17 +1866,19 @@ int32_t mm_stream_read_msm_frame(mm_stream_t * my_obj,
         if (my_obj->stream_info != NULL &&
                 (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
                  my_obj->is_bundled)) {
-            LOGE("NX549J camera superdiag: dqbuf fail hdl=0x%x "
-                    "server_id=%d type=%d fd=%d rc=%d errno=%d queued=%d "
-                    "length=%u",
-                    my_obj->my_hdl,
-                    my_obj->server_stream_id,
-                    my_obj->stream_info->stream_type,
-                    my_obj->fd,
-                    rc,
-                    errno,
-                    my_obj->queued_buffer_count,
-                    num_planes);
+            if (NX549J_DIAG_ENABLED()) {
+                LOGE("NX549J camera superdiag: dqbuf fail hdl=0x%x "
+                        "server_id=%d type=%d fd=%d rc=%d errno=%d queued=%d "
+                        "length=%u",
+                        my_obj->my_hdl,
+                        my_obj->server_stream_id,
+                        my_obj->stream_info->stream_type,
+                        my_obj->fd,
+                        rc,
+                        errno,
+                        my_obj->queued_buffer_count,
+                        num_planes);
+            }
         }
     } else {
         pthread_mutex_lock(&my_obj->buf_lock);
@@ -1878,30 +1917,32 @@ int32_t mm_stream_read_msm_frame(mm_stream_t * my_obj,
         if (my_obj->stream_info != NULL &&
                 (my_obj->stream_info->stream_type != CAM_STREAM_TYPE_PREVIEW ||
                  my_obj->is_bundled)) {
-            LOGE("NX549J camera superdiag: dqbuf done hdl=0x%x "
-                    "server_id=%d type=%d index=%u frame=%u "
-                    "timestamp=%lld.%06lld flags=0x%x reserved=0x%x "
-                    "field=%u memory=%u length=%u queued_after=%d "
-                    "buf_type=%d frame_len=%zu ref=%u in_kernel=%u",
-                    my_obj->my_hdl,
-                    my_obj->server_stream_id,
-                    my_obj->stream_info->stream_type,
-                    vb.index,
-                    vb.sequence,
-                    (long long)vb.timestamp.tv_sec,
-                    (long long)vb.timestamp.tv_usec,
-                    vb.flags,
-                    vb.reserved,
-                    vb.field,
-                    vb.memory,
-                    vb.length,
-                    my_obj->queued_buffer_count,
-                    buf_info->buf->buf_type,
-                    buf_info->buf->frame_len,
-                    idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
-                            my_obj->buf_status[idx].buf_refcnt : 0,
-                    idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
-                            my_obj->buf_status[idx].in_kernel : 0);
+            if (NX549J_DIAG_ENABLED()) {
+                LOGE("NX549J camera superdiag: dqbuf done hdl=0x%x "
+                        "server_id=%d type=%d index=%u frame=%u "
+                        "timestamp=%lld.%06lld flags=0x%x reserved=0x%x "
+                        "field=%u memory=%u length=%u queued_after=%d "
+                        "buf_type=%d frame_len=%zu ref=%u in_kernel=%u",
+                        my_obj->my_hdl,
+                        my_obj->server_stream_id,
+                        my_obj->stream_info->stream_type,
+                        vb.index,
+                        vb.sequence,
+                        (long long)vb.timestamp.tv_sec,
+                        (long long)vb.timestamp.tv_usec,
+                        vb.flags,
+                        vb.reserved,
+                        vb.field,
+                        vb.memory,
+                        vb.length,
+                        my_obj->queued_buffer_count,
+                        buf_info->buf->buf_type,
+                        buf_info->buf->frame_len,
+                        idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                                my_obj->buf_status[idx].buf_refcnt : 0,
+                        idx < CAM_MAX_NUM_BUFS_PER_STREAM ?
+                                my_obj->buf_status[idx].in_kernel : 0);
+            }
         }
 
         if(buf_info->buf->buf_type == CAM_STREAM_BUF_TYPE_USERPTR) {
@@ -2354,21 +2395,25 @@ int32_t mm_stream_map_buf(mm_stream_t * my_obj,
 #else
     packet.payload.buf_map = map;
 #endif
-    ALOGE("NX549J camera mapdiag: send stream map session=%u stream_id=%d "
-            "type=%u frame=%u plane=%d fd=%d size=%zu buffer=%p "
-            "internal_entry_size=%zu wire_entry_size=%zu packet_size=%zu",
-            my_obj->ch_obj->cam_obj->sessionid,
-            my_obj->server_stream_id, buf_type, frame_idx, plane_idx, fd,
-            size, buffer, sizeof(cam_buf_map_type),
-            sizeof(cam_sock_buf_map_type), sizeof(packet));
+    if (NX549J_DIAG_ENABLED()) {
+        ALOGE("NX549J camera mapdiag: send stream map session=%u stream_id=%d "
+                "type=%u frame=%u plane=%d fd=%d size=%zu buffer=%p "
+                "internal_entry_size=%zu wire_entry_size=%zu packet_size=%zu",
+                my_obj->ch_obj->cam_obj->sessionid,
+                my_obj->server_stream_id, buf_type, frame_idx, plane_idx, fd,
+                size, buffer, sizeof(cam_buf_map_type),
+                sizeof(cam_sock_buf_map_type), sizeof(packet));
+    }
 
 #ifdef DAEMON_PRESENT
     if (rc == 0) {
         rc = mm_camera_util_sendmsg(my_obj->ch_obj->cam_obj,
                                     &packet, sizeof(packet), fd);
     } else {
-        ALOGE("NX549J camera mapdiag: reject oversized stream map size=%zu",
-                size);
+        if (NX549J_DIAG_ENABLED()) {
+            ALOGE("NX549J camera mapdiag: reject oversized stream map size=%zu",
+                    size);
+        }
     }
 #else
     cam_shim_packet_t *shim_cmd;
@@ -2435,9 +2480,11 @@ int32_t mm_stream_map_bufs(mm_stream_t * my_obj,
     uint32_t numbufs;
     if (buf_map_list == NULL ||
             buf_map_list->length > CAM_MAX_NUM_BUFS_PER_STREAM) {
-        ALOGE("NX549J camera mapdiag: invalid stream map list=%p length=%u",
-                buf_map_list,
-                buf_map_list != NULL ? buf_map_list->length : 0);
+        if (NX549J_DIAG_ENABLED()) {
+            ALOGE("NX549J camera mapdiag: invalid stream map list=%p length=%u",
+                    buf_map_list,
+                    buf_map_list != NULL ? buf_map_list->length : 0);
+        }
         return -EINVAL;
     }
     numbufs = buf_map_list->length;
@@ -2454,8 +2501,10 @@ int32_t mm_stream_map_bufs(mm_stream_t * my_obj,
         ret = cam_sock_pack_buf_map(
                 &packet.payload.buf_map_list.buf_maps[i], src);
         if (ret < 0) {
-            ALOGE("NX549J camera mapdiag: reject oversized stream map "
-                    "item=%u size=%zu", i, src->size);
+            if (NX549J_DIAG_ENABLED()) {
+                ALOGE("NX549J camera mapdiag: reject oversized stream map "
+                        "item=%u size=%zu", i, src->size);
+            }
             break;
         }
 #else
@@ -2463,16 +2512,18 @@ int32_t mm_stream_map_bufs(mm_stream_t * my_obj,
 #endif
         packet.payload.buf_map_list.buf_maps[i].stream_id = my_obj->server_stream_id;
         sendfds[i] = src->fd;
-        ALOGE("NX549J camera mapdiag: send stream map_bufs session=%u "
-                "stream_id=%d item=%u/%u type=%u frame=%u plane=%d "
-                "cookie=%u fd=%d size=%zu buffer=%p "
-                "internal_entry_size=%zu wire_entry_size=%zu packet_size=%zu",
-                my_obj->ch_obj->cam_obj->sessionid,
-                my_obj->server_stream_id, i, numbufs,
-                src->type, src->frame_idx, src->plane_idx, src->cookie,
-                src->fd, src->size, src->buffer,
-                sizeof(cam_buf_map_type), sizeof(cam_sock_buf_map_type),
-                sizeof(packet));
+        if (NX549J_DIAG_ENABLED()) {
+            ALOGE("NX549J camera mapdiag: send stream map_bufs session=%u "
+                    "stream_id=%d item=%u/%u type=%u frame=%u plane=%d "
+                    "cookie=%u fd=%d size=%zu buffer=%p "
+                    "internal_entry_size=%zu wire_entry_size=%zu packet_size=%zu",
+                    my_obj->ch_obj->cam_obj->sessionid,
+                    my_obj->server_stream_id, i, numbufs,
+                    src->type, src->frame_idx, src->plane_idx, src->cookie,
+                    src->fd, src->size, src->buffer,
+                    sizeof(cam_buf_map_type), sizeof(cam_sock_buf_map_type),
+                    sizeof(packet));
+        }
     }
 
     if (ret == 0) {
