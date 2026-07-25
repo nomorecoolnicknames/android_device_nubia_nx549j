@@ -5970,6 +5970,10 @@ QCamera3HardwareInterface::translateFromHalMetadata(
           blackLevelSourcePattern->cam_black_level[3]);
     }
 
+    /* NX549J: set once the per-frame dynamic black level has been reported, so
+     * the static-pattern default below only fills in when the backend gave us
+     * nothing (which is always, on this daemon - see the note there). */
+    bool reportedDynBlack = false;
     IF_META_AVAILABLE(cam_black_level_metadata_t, blackLevelAppliedPattern,
         CAM_INTF_META_BLACK_LEVEL_APPLIED_PATTERN, metadata) {
         float fwk_blackLevelInd[4];
@@ -6004,12 +6008,52 @@ QCamera3HardwareInterface::translateFromHalMetadata(
         fwk_blackLevelInd[1] /= 64.0;
         fwk_blackLevelInd[2] /= 64.0;
         fwk_blackLevelInd[3] /= 64.0;
-        camMetadata.update(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL, fwk_blackLevelInd, 4);
+        /* NX549J blackdiag: the values actually handed to RAW-processing apps.
+         * libgcam validates them; bogus numbers make its AE model invalid. */
+        LOGE("NX549J blackdiag: dyn_black=%.3f %.3f %.3f %.3f white=%d",
+                fwk_blackLevelInd[0], fwk_blackLevelInd[1],
+                fwk_blackLevelInd[2], fwk_blackLevelInd[3],
+                gCamCapability[mCameraId]->white_level);
+        /* Gate added 2026-07-25: HDR+ captures COMPLETED before this reporting
+         * existed (they only crashed afterwards on the null read), and stopped
+         * completing after it was added. Allow A/B testing without a rebuild:
+         * `setprop persist.camera.nx549j.dynblack 0` reverts to not reporting. */
+        if (isCameraPropEnabled("persist.camera.nx549j.dynblack", "1")) {
+            camMetadata.update(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL, fwk_blackLevelInd, 4);
+            reportedDynBlack = true;
+        }
     }
 
-    // Fixed whitelevel is used by ISP/Sensor (see NX549J note above)
-    camMetadata.update(ANDROID_SENSOR_DYNAMIC_WHITE_LEVEL,
-            &gCamCapability[mCameraId]->white_level, 1);
+    if (isCameraPropEnabled("persist.camera.nx549j.dynblack", "1")) {
+        /*
+         * NX549J: this backend NEVER delivers
+         * CAM_INTF_META_BLACK_LEVEL_APPLIED_PATTERN - measured with blackdiag
+         * on the release: zero occurrences across a whole session while the
+         * same build logs 566 urgent-metadata callbacks. So the block above
+         * never ran and ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL was advertised in
+         * available_result_keys (1d32175) but never populated. Apps that do
+         * their own RAW processing read null there: that is both the original
+         * "nsr: expected a non-null reference" crash and, later in the
+         * pipeline, GCam's "AeResults from HdrPlusSession is invalid" - its
+         * HDR+ AE model cannot be built, so it never starts the ZSL RAW stream
+         * and a still capture can never complete.
+         * Per the Camera2 contract the dynamic black level defaults to the
+         * static ANDROID_SENSOR_BLACK_LEVEL_PATTERN when the sensor provides
+         * no per-frame value, so fall back to it (statics report [64 64 64 64]
+         * against whiteLevel 1023 on this sensor).
+         */
+        if (!reportedDynBlack) {
+            float fwk_staticBlack[4];
+            for (size_t bi = 0; bi < 4; bi++) {
+                fwk_staticBlack[bi] =
+                        (float)gCamCapability[mCameraId]->black_level_pattern[bi];
+            }
+            camMetadata.update(ANDROID_SENSOR_DYNAMIC_BLACK_LEVEL, fwk_staticBlack, 4);
+        }
+        // Fixed whitelevel is used by ISP/Sensor (see NX549J note above)
+        camMetadata.update(ANDROID_SENSOR_DYNAMIC_WHITE_LEVEL,
+                &gCamCapability[mCameraId]->white_level, 1);
+    }
 
     IF_META_AVAILABLE(cam_crop_region_t, hScalerCropRegion,
             CAM_INTF_META_SCALER_CROP_REGION, metadata) {
