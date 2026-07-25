@@ -6509,6 +6509,8 @@ QCamera3HardwareInterface::translateFromHalMetadata(
         uint8_t fwk_afState = (uint8_t) *afState;
         camMetadata.update(ANDROID_CONTROL_AF_STATE, &fwk_afState, 1);
         LOGD("urgent Metadata : ANDROID_CONTROL_AF_STATE %u", *afState);
+        /* NX549J 3adiag: AF state travels in the full (non-urgent) result */
+        LOGE("NX549J 3adiag: result af_state=%u", *afState);
     }
 
     IF_META_AVAILABLE(float, focusDistance, CAM_INTF_META_LENS_FOCUS_DISTANCE, metadata) {
@@ -6854,10 +6856,15 @@ QCamera3HardwareInterface::translateCbUrgentMetadataToResultMetadata
 {
     CameraMetadata camMetadata;
     camera_metadata_t *resultMetadata;
+    /* NX549J 3adiag: -1 = state absent from daemon metadata this frame */
+    int32_t diag_ae_state = -1;
+    int32_t diag_awb_state = -1;
+    int32_t diag_aec_settled = -1;
 
 
     IF_META_AVAILABLE(uint32_t, whiteBalanceState, CAM_INTF_META_AWB_STATE, metadata) {
         uint8_t fwk_whiteBalanceState = (uint8_t) *whiteBalanceState;
+        diag_awb_state = (int32_t)*whiteBalanceState;
         camMetadata.update(ANDROID_CONTROL_AWB_STATE, &fwk_whiteBalanceState, 1);
         LOGD("urgent Metadata : ANDROID_CONTROL_AWB_STATE %u", *whiteBalanceState);
     }
@@ -6875,6 +6882,7 @@ QCamera3HardwareInterface::translateCbUrgentMetadataToResultMetadata
 
     IF_META_AVAILABLE(uint32_t, ae_state, CAM_INTF_META_AEC_STATE, metadata) {
         uint8_t fwk_ae_state = (uint8_t) *ae_state;
+        diag_ae_state = (int32_t)*ae_state;
         camMetadata.update(ANDROID_CONTROL_AE_STATE, &fwk_ae_state, 1);
         LOGD("urgent Metadata : ANDROID_CONTROL_AE_STATE %u", *ae_state);
     }
@@ -6956,7 +6964,16 @@ QCamera3HardwareInterface::translateCbUrgentMetadataToResultMetadata
                 ae_params->settled, ae_params->brightness);
         float brightness_val = ae_params->brightness;
         camMetadata.update(QCAMERA3_BRIGHTNESS_VALUE, &brightness_val, 1);
+        diag_aec_settled = (int32_t)ae_params->settled;
     }
+    /*
+     * NX549J 3adiag: one line per urgent-metadata frame. GCam's ZSL picker
+     * ("Too few 3A-converged images found: 0/1") and converged-capture wait
+     * both key off these result states; -1 means the daemon did not deliver
+     * the field at all this frame. Diagnostic only; remove after root-cause.
+     */
+    LOGE("NX549J 3adiag: urgent ae_state=%d awb_state=%d aec_settled=%d",
+            diag_ae_state, diag_awb_state, diag_aec_settled);
     resultMetadata = camMetadata.release();
     return resultMetadata;
 }
