@@ -2222,6 +2222,9 @@ void QCamera2HardwareInterface::metadata_stream_cb_routine(mm_camera_super_buf_t
 
     IF_META_AVAILABLE(uint32_t, afState, CAM_INTF_META_AF_STATE, pMetaData) {
         uint8_t forceAFUpdate = FALSE;
+        /* NX549J 3adiag: what the daemon reports on the HAL1 path (compare
+         * with HAL3's constant ACTIVE_SCAN). Diagnostic only. */
+        LOGE("NX549J 3adiag: hal1 af_state=%u", *afState);
         //1. Earlier HAL used to rely on AF done flags set in metadata to generate callbacks to
         //upper layers. But in scenarios where metadata drops especially which contain important
         //AF information, APP will wait indefinitely for focus result resulting in capture hang.

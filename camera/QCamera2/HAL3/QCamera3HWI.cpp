@@ -580,6 +580,8 @@ QCamera3HardwareInterface::QCamera3HardwareInterface(uint32_t cameraId,
     mPendingLiveRequest = 0;
     mNx549jAutoAfCounter = 0;
     mNx549jAppDroveAf = false;
+    mNx549jAfStuckFrames = 0;
+    mNx549jAfTriggerActive = false;
     mCurrentRequestId = -1;
     pthread_mutex_init(&mMutex, NULL);
 
@@ -1600,6 +1602,8 @@ int QCamera3HardwareInterface::configureStreamsPerfLocked(
     /* NX549J: restart the auto-AF convergence cadence for the new stream session. */
     mNx549jAutoAfCounter = 0;
     mNx549jAppDroveAf = false;
+    mNx549jAfStuckFrames = 0;
+    mNx549jAfTriggerActive = false;
 
     // Sanity check stream_list
     if (streamList == NULL) {
@@ -6507,10 +6511,40 @@ QCamera3HardwareInterface::translateFromHalMetadata(
 
     IF_META_AVAILABLE(uint32_t, afState, CAM_INTF_META_AF_STATE, metadata) {
         uint8_t fwk_afState = (uint8_t) *afState;
+        /*
+         * NX549J AF-state shim. Measured on the release (3adiag, 2026-07-25):
+         * the HAL1 session reports textbook AF states from the same daemon
+         * (PASSIVE_FOCUSED steady, tap -> ACTIVE_SCAN -> FOCUSED_LOCKED), but
+         * the HAL3 session never reaches a final state: with the auto-AF
+         * injector on it sits in ACTIVE_SCAN forever (re-triggered scans),
+         * with it off it sits in INACTIVE forever (backend never starts CAF
+         * for HAL3). GCam's ZSL picker demands a converged AF state per frame
+         * ("Too few 3A-converged images found: 0/1"), so still capture
+         * starves and wedges. Until the backend session is fixed, synthesize
+         * the mode-legal converged state once the backend has been stuck in a
+         * non-final state for ~1.5 s; real sharpness is provided by the
+         * auto-AF injector's scans, which do converge optically.
+         * Runtime-killable: `setprop persist.camera.nx549j.afshim 0`.
+         */
+        if (isCameraPropEnabled("persist.camera.nx549j.afshim", "1")) {
+            if ((fwk_afState == ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN) ||
+                    (fwk_afState == ANDROID_CONTROL_AF_STATE_INACTIVE)) {
+                mNx549jAfStuckFrames++;
+                /* ~1.5 s at 30 fps; long enough for a genuine single scan
+                 * (HAL1 measured ~0.6 s) to finish and report on its own */
+                if (mNx549jAfStuckFrames > 45) {
+                    fwk_afState = mNx549jAfTriggerActive ?
+                            ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED :
+                            ANDROID_CONTROL_AF_STATE_PASSIVE_FOCUSED;
+                }
+            } else {
+                mNx549jAfStuckFrames = 0;
+            }
+        }
         camMetadata.update(ANDROID_CONTROL_AF_STATE, &fwk_afState, 1);
         LOGD("urgent Metadata : ANDROID_CONTROL_AF_STATE %u", *afState);
-        /* NX549J 3adiag: AF state travels in the full (non-urgent) result */
-        LOGE("NX549J 3adiag: result af_state=%u", *afState);
+        /* NX549J 3adiag: reported vs backend AF state. Diagnostic only. */
+        LOGE("NX549J 3adiag: result af_state=%u backend=%u", fwk_afState, *afState);
     }
 
     IF_META_AVAILABLE(float, focusDistance, CAM_INTF_META_LENS_FOCUS_DISTANCE, metadata) {
@@ -10681,6 +10715,13 @@ int QCamera3HardwareInterface::translateToHalMetadata
             frame_settings.find(ANDROID_CONTROL_AF_TRIGGER).data.u8[0] ==
                     ANDROID_CONTROL_AF_TRIGGER_START) {
         mNx549jAppDroveAf = true;
+        /* NX549J AF-state shim: an app trigger is in flight until CANCEL */
+        mNx549jAfTriggerActive = true;
+    }
+    if (frame_settings.exists(ANDROID_CONTROL_AF_TRIGGER) &&
+            frame_settings.find(ANDROID_CONTROL_AF_TRIGGER).data.u8[0] ==
+                    ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
+        mNx549jAfTriggerActive = false;
     }
     if (frame_settings.exists(ANDROID_CONTROL_AF_REGIONS) &&
             frame_settings.find(ANDROID_CONTROL_AF_REGIONS).count >= 5 &&

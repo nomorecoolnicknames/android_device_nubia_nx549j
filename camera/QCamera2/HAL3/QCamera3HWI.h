@@ -507,6 +507,12 @@ private:
     // NX549J: latched true once the app drives AF itself (real tap: START trigger or
     // weighted AF region) so the auto-AF injector never fights the user this session.
     bool mNx549jAppDroveAf;
+    // NX549J AF-state shim: consecutive frames the backend reported a non-final
+    // AF state (ACTIVE_SCAN storm from the auto-AF injector, or INACTIVE when
+    // the HAL3 backend session never starts CAF). See translateFromHalMetadata.
+    uint32_t mNx549jAfStuckFrames;
+    // NX549J AF-state shim: true between an app AF_TRIGGER_START and its CANCEL.
+    bool mNx549jAfTriggerActive;
     bool mWokenUpByDaemon;
     int32_t mCurrentRequestId;
     cam_stream_size_info_t mStreamConfigInfo;
